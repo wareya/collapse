@@ -18,18 +18,22 @@ struct RgbaF {
     a : f64
 }
 impl RgbaF {
+    #[inline(always)]
     fn new(r : f64, g : f64, b : f64, a : f64) -> RgbaF
     {
         RgbaF{r, g, b, a}
     }
+    #[inline(always)]
     fn to_u8(&self) -> Rgba
     {
         Rgba{r : (self.r * 255.0).round() as u8, g : (self.g * 255.0).round() as u8, b : (self.b * 255.0).round() as u8, a : (self.a * 255.0).round() as u8}
     }
+    #[inline(always)]
     fn add(&self, other : &RgbaF) -> RgbaF
     {
         RgbaF{r : self.r + other.r, g : self.g + other.g, b : self.b + other.b, a : self.a + other.a}
     }
+    #[inline(always)]
     fn mult(&self, thing : f64) -> RgbaF
     {
         RgbaF{r : self.r * thing, g : self.g * thing, b : self.b * thing, a : self.a * thing}
@@ -50,10 +54,12 @@ struct Rgba {
 }
 
 impl Rgba {
+    #[inline(always)]
     fn new(r : u8, g : u8, b : u8, a : u8) -> Rgba
     {
         Rgba{r, g, b, a}
     }
+    #[inline(always)]
     fn to_float(&self) -> RgbaF
     {
         RgbaF{r : self.r as f64/255.0, g : self.g as f64/255.0, b : self.b as f64/255.0, a : self.a as f64/255.0}
@@ -210,7 +216,7 @@ fn main() {
             {
                 total += other;
             }
-            assert!(total > 0.0, "failed tile type {} direction {}", i, j);
+            //assert!(total > 0.0, "failed tile type {} direction {}", i, j);
             for other in &mut ships[i][j]
             {
                 *other /= total;
@@ -228,8 +234,8 @@ fn main() {
     }
     
     
-    let width  = 30; // 3 screens
-    let height = 24; // 3 screens
+    let width  = 10;
+    let height =  8;
     let mut out_map : Vec<Vec<SuperTile>> = vec!(vec!(SuperTile::Field(
         [vec!(1.0; (max_index) as usize),
          vec!(1.0; (max_index) as usize),
@@ -248,15 +254,29 @@ fn main() {
     //    }
     //};
     
+    let mut forbidden_tiles = HashSet::new();
+    forbidden_tiles.insert(map[1][0]);
+    forbidden_tiles.insert(*map[1].last().unwrap());
+    forbidden_tiles.insert(map[0][1]);
+    forbidden_tiles.insert(map.last().unwrap()[1]);
+    forbidden_tiles.insert(map[0][0]);
+    forbidden_tiles.insert(*map[0].last().unwrap());
+    forbidden_tiles.insert(map.last().unwrap()[0]);
+    forbidden_tiles.insert(*map.last().unwrap().last().unwrap());
+    
     let edge_weight = |origin : TileId, edge : TileId, direction : usize| -> f64
     {
-        if edge != 0 {
-            ships[origin][direction][edge]
-        } else {0.0}
+        if forbidden_tiles.contains(&edge) { 0.0 }
+        else { ships[origin][direction][edge] }
+    };
+    let edge_weight_reverse = |origin : TileId, edge : TileId, direction : usize| -> f64
+    {
+        if forbidden_tiles.contains(&edge) { 0.0 }
+        else { ships[edge][(direction+2)%4][origin] }
     };
     let actual_weight = |tile : &SuperTile, edge : TileId, direction : usize| -> f64
     {
-        if edge == 0
+        if forbidden_tiles.contains(&edge)
         {
             return 0.0;
         }
@@ -275,9 +295,10 @@ fn main() {
                     }
                     else
                     {
-                        total += edge_weight(i, edge, direction)
-                           * f;
-                           //* glob;
+                        //total += edge_weight(i, edge, direction)
+                        total += edge_weight_reverse(i, edge, direction)
+                           //* f
+                           //* glob
                            ;
                     }
                 }
@@ -338,14 +359,23 @@ fn main() {
                             let modifier = actual_weight(&base, j, direction);
                             if modifier != 0.0
                             {
-                                if origin_is_real_tile
+                                if false//origin_is_real_tile
                                 {
                                     field[j] = field[j]*0.2 + modifier*0.8; // controls the overall amount of chaos in the system; pure modifier is low-chaos, pure field is high-chaos
                                     //field[j] = modifier;
+                                    if field[j] == 0.0 // because of numerical instability/underflow
+                                    {
+                                        field[j] = modifier;
+                                    }
                                 }
-                                else
+                                else if false
                                 {
+                                    let orig = field[j];
                                     field[j] = field[j]*0.999 + modifier*0.001; // controls the overall amount of chaos in the system; pure modifier is low-chaos, pure field is high-chaos
+                                    if field[j] == 0.0 // because of numerical instability/underflow
+                                    {
+                                        field[j] = orig;
+                                    }
                                 }
                             }
                             else
@@ -359,15 +389,29 @@ fn main() {
                         }
                         total += field[j];
                     }
+                    //if total > 0.0
+                    //{
+                    //    for j in 0..field.len()
+                    //    {
+                    //        field[j] /= total;
+                    //    }
+                    //}
                     if damaged
                     {
-                        damage.insert(offset);
-                    }
-                    if total > 0.0
-                    {
-                        for j in 0..field.len()
+                        //damage.insert(offset);
+                        drop(field);
+                        for j in 0..fields[0].len()
                         {
-                            field[j] /= total;
+                            for i in 0..fields.len()
+                            {
+                                if fields[i][j] == 0.0
+                                {
+                                    fields[0][j] = 0.0;
+                                    fields[1][j] = 0.0;
+                                    fields[2][j] = 0.0;
+                                    fields[3][j] = 0.0;
+                                }
+                            }
                         }
                     }
                     //assert!(total > 0.0, "failure at {},{} with {}", offset.0, offset.1, total);
@@ -378,43 +422,22 @@ fn main() {
     
     for y in 0..height+2
     {
-        out_map[y][0]       = SuperTile::Tile(0);
-        out_map[y][width+1] = SuperTile::Tile(0);
+        out_map[y][0]       = SuperTile::Tile(map[1][0]);
+        out_map[y][width+1] = SuperTile::Tile(*map[1].last().unwrap());
         damage.insert((0, y));
         damage.insert((width+1, y));
     }
     for x in 0..width+2
     {
-        out_map[0][x]        = SuperTile::Tile(0);
-        out_map[height+1][x] = SuperTile::Tile(0);
+        out_map[0][x]        = SuperTile::Tile(map[0][1]);
+        out_map[height+1][x] = SuperTile::Tile(map.last().unwrap()[1]);
         damage.insert((x, 0));
         damage.insert((x, height+1));
     }
-    
-    let recalculate_all = |
-        out_map : &mut Vec<Vec<SuperTile>>,
-        damage : &mut HashSet<(usize, usize)>,
-        candidates : &mut HashSet<(usize, usize)>,
-        candidates_list : &mut Vec<(usize, usize)>
-        |
-    {
-        let mut i = 0;
-        while !damage.is_empty()
-        {
-            let choice = damage.iter().next().unwrap().clone();
-            damage.remove(&choice);
-            recalculate_around(out_map, damage, candidates, candidates_list, choice);
-            i += 1;
-        }
-        println!("recalcuated {} tiles", i);
-    };
-    
-    recalculate_all(&mut out_map, &mut damage, &mut candidates, &mut candidates_list);
-    
-    #[allow(unused_variables)]
-    let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
-    //let mut rng = oorandom::Rand64::new(time.as_millis() as u64);
-    let mut rng = oorandom::Rand64::new(0);
+    out_map[0][0] = SuperTile::Tile(map[0][0]);
+    *out_map[0].last_mut().unwrap() = SuperTile::Tile(*map[0].last().unwrap());
+    out_map.last_mut().unwrap()[0] = SuperTile::Tile(map.last().unwrap()[0]);
+    *out_map.last_mut().unwrap().last_mut().unwrap() = SuperTile::Tile(*map.last().unwrap().last().unwrap());
     
     let write_image = |out_map : &mut Vec<Vec<SuperTile>>, namesuffix|
     {
@@ -477,20 +500,53 @@ fn main() {
         }
     };
     
-    let mut i = 0;
+    let mut collapse_iteration = 0;
+    
+    let recalculate_all = |
+        out_map : &mut Vec<Vec<SuperTile>>,
+        damage : &mut HashSet<(usize, usize)>,
+        candidates : &mut HashSet<(usize, usize)>,
+        candidates_list : &mut Vec<(usize, usize)>,
+        collapse_iteration : usize
+        |
+    {
+        let mut i = 0;
+        while !damage.is_empty()
+        {
+            let choice = damage.iter().next().unwrap().clone();
+            damage.remove(&choice);
+            recalculate_around(out_map, damage, candidates, candidates_list, choice);
+            i += 1;
+            if collapse_iteration == 0xFFFFFFFFFFFFFFFF//34
+            {
+                write_image(out_map, format!("{}-b{}", collapse_iteration.to_string(), i));
+            }
+        }
+        println!("recalcuated {} tiles", i);
+    };
+    
+    recalculate_all(&mut out_map, &mut damage, &mut candidates, &mut candidates_list, collapse_iteration);
+    
+    #[allow(unused_variables)]
+    let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+    //let time = 1627830772369;
+    let time = 1627832395045;
+    println!("seed: {}", time);
+    let mut rng = oorandom::Rand64::new(time);
     
     let mut collapse = |choice : (usize, usize),
         rng : &mut oorandom::Rand64,
         out_map : &mut Vec<Vec<SuperTile>>,
         damage : &mut HashSet<(usize, usize)>,
         candidates : &mut HashSet<(usize, usize)>,
-        candidates_list : &mut Vec<(usize, usize)>|
+        candidates_list : &mut Vec<(usize, usize)>| -> bool
     {
         let cell = &out_map[choice.1][choice.0];
         let mut decision = 0;
+        let mut force = false;
         match cell
         {
-            SuperTile::Tile(_) => return,
+            SuperTile::Tile(_) => return false,
             SuperTile::Field(fields) =>
             {
                 let mut total = 0.0;
@@ -504,11 +560,13 @@ fn main() {
                         possible_fields.push(i);
                     }
                 }
-                if false
+                force = possible_fields.len() < 2;
+                if true
                 {
                     if possible_fields.len() > 0
                     {
-                        decision = possible_fields[rng.rand_range(0..possible_fields.len() as u64) as usize];
+                        //decision = possible_fields[rng.rand_range(0..possible_fields.len() as u64) as usize];
+                        decision = possible_fields[0];
                     }
                 }
                 else
@@ -534,34 +592,103 @@ fn main() {
                 }
             }
         }
-        //if decision == 0
-        //{
-        //    decision = most_common;
-        //}
+        if decision == 0
+        {
+            decision = most_common;
+        }
+        //let old_copy = out_map.clone();
+        //let old_damage = damage.clone();
+        //let old_candidates = candidates.clone();
+        //let old_candidates_list = candidates_list.clone();
         out_map[choice.1][choice.0] = SuperTile::Tile(decision);
         damage.insert(choice);
-        recalculate_all(out_map, damage, candidates, candidates_list);
-        
-        
-        let comp = std::cmp::max(1, (width+2)*(height+2)/32);
-        if i%comp == 0
+        recalculate_all(out_map, damage, candidates, candidates_list, collapse_iteration);
+        let get_failed = ||
         {
-            println!("writing image for {}", i);
-            write_image(out_map, i.to_string());
-            println!("wrote image");
+            for row in out_map.iter()
+            {
+                for cell in row
+                {
+                    match cell
+                    {
+                        SuperTile::Tile(_) => {},
+                        SuperTile::Field(fields) =>
+                        {
+                            let mut total = 0.0;
+                            for i in 0..fields[0].len()
+                            {
+                                let f = fields[0][i] * fields[1][i] * fields[2][i] * fields[3][i];
+                                total += f;
+                            }
+                            if total == 0.0
+                            {
+                                if !force
+                                {
+                                    println!("!!!!--- failed, rewinding");
+                                    return true;
+                                }
+                                else
+                                {
+                                    println!("!!!!--- failed rewinding but forced to live with it");
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            false
+        };
+        let failed = false;//[get_failed(), false][1];
+        if failed
+        {
+            //*out_map = old_copy;
+            //*damage = old_damage;
+            //*candidates = old_candidates;
+            //*candidates_list = old_candidates_list;
+            candidates.insert(choice);
+            candidates_list.push(choice);
+            match &mut out_map[choice.1][choice.0]
+            {
+                SuperTile::Tile(_) => {},
+                SuperTile::Field(fields) =>
+                {
+                    fields[0][decision] = 0.0;
+                    fields[1][decision] = 0.0;
+                    fields[2][decision] = 0.0;
+                    fields[3][decision] = 0.0;
+                }
+            }
+            damage.insert(choice);
+            recalculate_all(out_map, damage, candidates, candidates_list, collapse_iteration);
         }
-        i += 1;
+        else
+        {
+            let comp = std::cmp::max(1, (((width+2)*(height+2)) as f32/64.0).floor() as usize);
+            let comp = std::cmp::max(1, (((width+2)*(height+2)) as f32/8.0).floor() as usize);
+            if collapse_iteration%1000000000 == 0
+            {
+                println!("writing image for {}", collapse_iteration);
+                write_image(out_map, collapse_iteration.to_string());
+                println!("wrote image");
+            }
+            collapse_iteration += 1;
+        }
+        return failed;
     };
     
     
-    if true
+    if false
     {
         for y in 1..height+1
         {
             for x in 1..width+1
             {
                 let choice = (x, y);
-                collapse(choice, &mut rng, &mut out_map, &mut damage, &mut candidates, &mut candidates_list);
+                while collapse(choice, &mut rng, &mut out_map, &mut damage, &mut candidates, &mut candidates_list)
+                {
+                    
+                }
             }
         }
     }
@@ -573,7 +700,10 @@ fn main() {
             let choice = candidates_list[choice_index].clone();
             candidates_list.remove(choice_index);
             candidates.remove(&choice);
-            collapse(choice, &mut rng, &mut out_map, &mut damage, &mut candidates, &mut candidates_list);
+            while collapse(choice, &mut rng, &mut out_map, &mut damage, &mut candidates, &mut candidates_list)
+            {
+                
+            }
         }
     }
     
