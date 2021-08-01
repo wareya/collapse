@@ -288,9 +288,9 @@ fn main() {
             SuperTile::Field(fields) =>
             {
                 let mut total = 0.0;
-                for (i, f) in fields[direction].iter().enumerate()
+                for (id, f) in fields[direction].iter().enumerate()
                 {
-                    let glob = fields[0][i] * fields[1][i] * fields[2][i] * fields[3][i];
+                    let glob = fields[0][id] * fields[1][id] * fields[2][id] * fields[3][id];
                     if glob == 0.0
                     {
                         continue
@@ -298,7 +298,7 @@ fn main() {
                     else
                     {
                         //total += edge_weight(i, edge, direction)
-                        total += edge_weight_reverse(i, edge, direction)
+                        total += edge_weight_reverse(id, edge, direction)
                            * f
                            //* glob
                            ;
@@ -317,18 +317,26 @@ fn main() {
         damage : &mut BTreeSet<(usize, usize)>,
         candidates : &mut BTreeSet<(usize, usize)>,
         (x, y) : (usize, usize)
-        |
+        | -> bool
     {
         let in_bounds = |out_map : &Vec<Vec<SuperTile>>, (x, y)| -> bool { x < out_map[0].len() && y < out_map.len() };
+        if !in_bounds(out_map, (x, y))
+        {
+            return false;
+        }
         let base = out_map[y][x].clone();
         for (direction, offset) in directions.iter().enumerate()
         {
             let offset = ((offset.0 + x as isize) as usize, (offset.1 + y as isize) as usize);
+            let in_bounds = |out_map : &Vec<Vec<SuperTile>>, (x, y)| -> bool { x > 0 && x < out_map[0].len()-1 && y > 0 && y < out_map.len()-1 };
             if !in_bounds(out_map, offset)
             {
                 continue;
             }
             let tile = &mut out_map[offset.1][offset.0];
+            let mut num_possible_ids = 0;
+            let mut last_possible_id = 0;
+            let mut damaged = false;
             match tile
             {
                 SuperTile::Tile(_) => continue,
@@ -350,7 +358,6 @@ fn main() {
                     }
                     let field = &mut fields[(direction+2)%4];
                     let mut total = 0.0;
-                    let mut damaged = false;
                     for j in 0..field.len()
                     {
                         if field[j] != 0.0
@@ -361,19 +368,9 @@ fn main() {
                                 if origin_is_real_tile
                                 {
                                     field[j] = field[j]*0.2 + modifier*0.8; // controls the overall amount of chaos in the system; pure modifier is low-chaos, pure field is high-chaos
-                                    //field[j] = modifier;
                                     if field[j] == 0.0 // because of numerical instability/underflow
                                     {
                                         field[j] = modifier;
-                                    }
-                                }
-                                else if false
-                                {
-                                    let orig = field[j];
-                                    field[j] = field[j]*0.999 + modifier*0.001; // controls the overall amount of chaos in the system; pure modifier is low-chaos, pure field is high-chaos
-                                    if field[j] == 0.0 // because of numerical instability/underflow
-                                    {
-                                        field[j] = orig;
                                     }
                                 }
                             }
@@ -387,6 +384,11 @@ fn main() {
                             }
                         }
                         total += field[j];
+                        if field[j] > 0.0
+                        {
+                            num_possible_ids += 1;
+                            last_possible_id = j;
+                        }
                     }
                     if total > 0.0
                     {
@@ -395,11 +397,17 @@ fn main() {
                             field[j] /= total;
                         }
                     }
+                    drop(field);
                     if damaged
                     {
+                        //for y in -1..1
+                        //{
+                        //    for x in -1..1
+                        //    {
+                        //        damage.insert((offset.0 + x as usize, offset.1 + y as usize));
+                        //    }
+                        //}
                         damage.insert(offset);
-                        damage.insert((x, y));
-                        drop(field);
                         for j in 0..fields[0].len()
                         {
                             for i in 0..fields.len()
@@ -417,7 +425,16 @@ fn main() {
                     //assert!(total > 0.0, "failure at {},{} with {}", offset.0, offset.1, total);
                 }
             }
+            //if num_possible_ids == 1
+            //{
+            //    *tile = SuperTile::Tile(last_possible_id);
+            //    if !damaged
+            //    {
+            //        damage.insert(offset);
+            //    }
+            //}
         }
+        true
     };
     
     for y in 0..height+2
@@ -439,7 +456,7 @@ fn main() {
     out_map.last_mut().unwrap()[0] = SuperTile::Tile(map.last().unwrap()[0]);
     *out_map.last_mut().unwrap().last_mut().unwrap() = SuperTile::Tile(*map.last().unwrap().last().unwrap());
     
-    let write_image = |out_map : &mut Vec<Vec<SuperTile>>, namesuffix|
+    let write_image = |out_map : &mut Vec<Vec<SuperTile>>, namesuffix, highlight : (usize, usize)|
     {
         let mut out = DynamicImage::new_rgba8((out_map[0].len()*tilesize) as u32, (out_map.len()*tilesize) as u32);
         let out_writer = out.as_mut_rgba8().unwrap();
@@ -490,6 +507,27 @@ fn main() {
                         }
                     }
                 }
+                if (x, y) == highlight
+                {
+                    for ty in 0..tilesize
+                    {
+                        let px = out_writer.get_pixel_mut((x*tilesize + 0         ) as u32, (y*tilesize + ty) as u32);
+                        px[0] = 255;
+                        px[2] = 255;
+                        let px = out_writer.get_pixel_mut((x*tilesize + tilesize-1) as u32, (y*tilesize + ty) as u32);
+                        px[0] = 255;
+                        px[2] = 255;
+                    }
+                    for tx in 0..tilesize
+                    {
+                        let px = out_writer.get_pixel_mut((x*tilesize + tx) as u32, (y*tilesize + 0         ) as u32);
+                        px[0] = 255;
+                        px[2] = 255;
+                        let px = out_writer.get_pixel_mut((x*tilesize + tx) as u32, (y*tilesize + tilesize-1) as u32);
+                        px[0] = 255;
+                        px[2] = 255;
+                    }
+                }
             }
         }
         if format!("{}", namesuffix).as_str() != ""
@@ -518,9 +556,9 @@ fn main() {
             damage.remove(&choice);
             recalculate_around(out_map, damage, candidates, choice);
             i += 1;
-            if collapse_iteration == 14 || collapse_iteration == 15
+            if collapse_iteration == 1 || collapse_iteration == 14 || collapse_iteration == 15
             {
-                write_image(out_map, format!("{}-b{}", collapse_iteration.to_string(), i));
+                write_image(out_map, format!("{}-b{}", collapse_iteration.to_string(), i), choice);
             }
         }
         println!("recalcuated {} tiles", i);
@@ -607,7 +645,7 @@ fn main() {
         if collapse_iteration%comp == 0
         {
             println!("writing image for {}", collapse_iteration);
-            write_image(out_map, format!("{}-a1", collapse_iteration.to_string()));
+            write_image(out_map, format!("{}-a1", collapse_iteration.to_string()), choice);
             println!("wrote image");
         }
         damage.insert(choice);
@@ -674,7 +712,7 @@ fn main() {
             if collapse_iteration%comp == 0
             {
                 println!("writing image for {}", collapse_iteration);
-                write_image(out_map, collapse_iteration.to_string());
+                write_image(out_map, collapse_iteration.to_string(), choice);
                 println!("wrote image");
             }
             collapse_iteration += 1;
@@ -779,7 +817,7 @@ fn main() {
     }
     */
     
-    write_image(&mut out_map, "".to_string());
+    write_image(&mut out_map, "".to_string(), (!0usize, !0usize));
 }
 
 
