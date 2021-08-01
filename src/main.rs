@@ -4,7 +4,7 @@ use std::env::args as args;
 use image::io::Reader as ImageReader;
 #[allow(unused_imports)]
 use image::{DynamicImage, GenericImageView, Pixel};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 
 #[derive(Copy)]
@@ -46,6 +46,8 @@ impl RgbaF {
 #[derive(Debug)]
 #[derive(PartialEq)]
 #[derive(Hash)]
+#[derive(PartialOrd)]
+#[derive(Ord)]
 struct Rgba {
     r : u8,
     g : u8,
@@ -132,8 +134,8 @@ fn main() {
     }
     
     let mut max_index = 0;
-    let mut tile_to_id = HashMap::new();
-    let mut id_to_tile = HashMap::new();
+    let mut tile_to_id = BTreeMap::new();
+    let mut id_to_tile = BTreeMap::new();
     let mut map = Vec::with_capacity(img.height() as usize/tilesize);
     for y in 0..img.height() as usize/tilesize
     {
@@ -254,7 +256,7 @@ fn main() {
     //    }
     //};
     
-    let mut forbidden_tiles = HashSet::new();
+    let mut forbidden_tiles = BTreeSet::new();
     forbidden_tiles.insert(map[1][0]);
     forbidden_tiles.insert(*map[1].last().unwrap());
     forbidden_tiles.insert(map[0][1]);
@@ -297,7 +299,7 @@ fn main() {
                     {
                         //total += edge_weight(i, edge, direction)
                         total += edge_weight_reverse(i, edge, direction)
-                           //* f
+                           * f
                            //* glob
                            ;
                     }
@@ -307,15 +309,13 @@ fn main() {
         }
     };
     
-    let mut damage = HashSet::new();
-    let mut candidates_list = Vec::new();
-    let mut candidates = HashSet::new();
+    let mut damage = BTreeSet::new();
+    let mut candidates = BTreeSet::new();
     
     let recalculate_around = |
         out_map : &mut Vec<Vec<SuperTile>>,
-        damage : &mut HashSet<(usize, usize)>,
-        candidates : &mut HashSet<(usize, usize)>,
-        candidates_list : &mut Vec<(usize, usize)>,
+        damage : &mut BTreeSet<(usize, usize)>,
+        candidates : &mut BTreeSet<(usize, usize)>,
         (x, y) : (usize, usize)
         |
     {
@@ -343,7 +343,6 @@ fn main() {
                             if !candidates.contains(&offset)
                             {
                                 candidates.insert(offset);
-                                candidates_list.push(offset);
                                 //println!("added {},{} to candidates", offset.0, offset.1);
                             }
                         }
@@ -359,7 +358,7 @@ fn main() {
                             let modifier = actual_weight(&base, j, direction);
                             if modifier != 0.0
                             {
-                                if false//origin_is_real_tile
+                                if origin_is_real_tile
                                 {
                                     field[j] = field[j]*0.2 + modifier*0.8; // controls the overall amount of chaos in the system; pure modifier is low-chaos, pure field is high-chaos
                                     //field[j] = modifier;
@@ -389,16 +388,17 @@ fn main() {
                         }
                         total += field[j];
                     }
-                    //if total > 0.0
-                    //{
-                    //    for j in 0..field.len()
-                    //    {
-                    //        field[j] /= total;
-                    //    }
-                    //}
+                    if total > 0.0
+                    {
+                        for j in 0..field.len()
+                        {
+                            field[j] /= total;
+                        }
+                    }
                     if damaged
                     {
-                        //damage.insert(offset);
+                        damage.insert(offset);
+                        damage.insert((x, y));
                         drop(field);
                         for j in 0..fields[0].len()
                         {
@@ -481,8 +481,10 @@ fn main() {
                                     }
                                     sum2 = sum2.add(&sum.mult(1.0/total_f));
                                 }
+                                sum2.g *= 0.75;
+                                sum2.b *= 0.75;
                                 let sum = sum2.mult(1.0/4.0).to_u8();
-                                let rgba = *image::Rgba::from_slice(&[sum.r, sum.g, sum.b, sum.a]);
+                                let mut rgba = *image::Rgba::from_slice(&[sum.r, sum.g, sum.b, sum.a]);
                                 *out_writer.get_pixel_mut((x*tilesize + tx) as u32, (y*tilesize + ty) as u32) = rgba;
                             }
                         }
@@ -504,9 +506,8 @@ fn main() {
     
     let recalculate_all = |
         out_map : &mut Vec<Vec<SuperTile>>,
-        damage : &mut HashSet<(usize, usize)>,
-        candidates : &mut HashSet<(usize, usize)>,
-        candidates_list : &mut Vec<(usize, usize)>,
+        damage : &mut BTreeSet<(usize, usize)>,
+        candidates : &mut BTreeSet<(usize, usize)>,
         collapse_iteration : usize
         |
     {
@@ -515,9 +516,9 @@ fn main() {
         {
             let choice = damage.iter().next().unwrap().clone();
             damage.remove(&choice);
-            recalculate_around(out_map, damage, candidates, candidates_list, choice);
+            recalculate_around(out_map, damage, candidates, choice);
             i += 1;
-            if collapse_iteration == 0xFFFFFFFFFFFFFFFF//34
+            if collapse_iteration == 14 || collapse_iteration == 15
             {
                 write_image(out_map, format!("{}-b{}", collapse_iteration.to_string(), i));
             }
@@ -525,21 +526,25 @@ fn main() {
         println!("recalcuated {} tiles", i);
     };
     
-    recalculate_all(&mut out_map, &mut damage, &mut candidates, &mut candidates_list, collapse_iteration);
+    recalculate_all(&mut out_map, &mut damage, &mut candidates, collapse_iteration);
     
     #[allow(unused_variables)]
     let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
     //let time = 1627830772369;
-    let time = 1627832395045;
+    //let time = 1627832395045;
+    let time = 1627836423901;
     println!("seed: {}", time);
     let mut rng = oorandom::Rand64::new(time);
+    
+    let comp = std::cmp::max(1, (((width+2)*(height+2)) as f32/64.0).floor() as usize);
+    let comp = std::cmp::max(1, (((width+2)*(height+2)) as f32/8.0).floor() as usize);
+    let comp = 1;
     
     let mut collapse = |choice : (usize, usize),
         rng : &mut oorandom::Rand64,
         out_map : &mut Vec<Vec<SuperTile>>,
-        damage : &mut HashSet<(usize, usize)>,
-        candidates : &mut HashSet<(usize, usize)>,
-        candidates_list : &mut Vec<(usize, usize)>| -> bool
+        damage : &mut BTreeSet<(usize, usize)>,
+        candidates : &mut BTreeSet<(usize, usize)>| -> bool
     {
         let cell = &out_map[choice.1][choice.0];
         let mut decision = 0;
@@ -565,8 +570,7 @@ fn main() {
                 {
                     if possible_fields.len() > 0
                     {
-                        //decision = possible_fields[rng.rand_range(0..possible_fields.len() as u64) as usize];
-                        decision = possible_fields[0];
+                        decision = possible_fields[rng.rand_range(0..possible_fields.len() as u64) as usize];
                     }
                 }
                 else
@@ -596,13 +600,18 @@ fn main() {
         {
             decision = most_common;
         }
-        //let old_copy = out_map.clone();
-        //let old_damage = damage.clone();
-        //let old_candidates = candidates.clone();
-        //let old_candidates_list = candidates_list.clone();
+        let old_copy = out_map.clone();
+        let old_damage = damage.clone();
+        let old_candidates = candidates.clone();
         out_map[choice.1][choice.0] = SuperTile::Tile(decision);
+        if collapse_iteration%comp == 0
+        {
+            println!("writing image for {}", collapse_iteration);
+            write_image(out_map, format!("{}-a1", collapse_iteration.to_string()));
+            println!("wrote image");
+        }
         damage.insert(choice);
-        recalculate_all(out_map, damage, candidates, candidates_list, collapse_iteration);
+        recalculate_all(out_map, damage, candidates, collapse_iteration);
         let get_failed = ||
         {
             for row in out_map.iter()
@@ -639,15 +648,13 @@ fn main() {
             }
             false
         };
-        let failed = false;//[get_failed(), false][1];
+        let failed = [get_failed(), false][1];
         if failed
         {
-            //*out_map = old_copy;
-            //*damage = old_damage;
-            //*candidates = old_candidates;
-            //*candidates_list = old_candidates_list;
+            *out_map = old_copy;
+            *damage = old_damage;
+            *candidates = old_candidates;
             candidates.insert(choice);
-            candidates_list.push(choice);
             match &mut out_map[choice.1][choice.0]
             {
                 SuperTile::Tile(_) => {},
@@ -660,13 +667,11 @@ fn main() {
                 }
             }
             damage.insert(choice);
-            recalculate_all(out_map, damage, candidates, candidates_list, collapse_iteration);
+            recalculate_all(out_map, damage, candidates, collapse_iteration);
         }
         else
         {
-            let comp = std::cmp::max(1, (((width+2)*(height+2)) as f32/64.0).floor() as usize);
-            let comp = std::cmp::max(1, (((width+2)*(height+2)) as f32/8.0).floor() as usize);
-            if collapse_iteration%1000000000 == 0
+            if collapse_iteration%comp == 0
             {
                 println!("writing image for {}", collapse_iteration);
                 write_image(out_map, collapse_iteration.to_string());
@@ -685,9 +690,9 @@ fn main() {
             for x in 1..width+1
             {
                 let choice = (x, y);
-                while collapse(choice, &mut rng, &mut out_map, &mut damage, &mut candidates, &mut candidates_list)
+                while collapse(choice, &mut rng, &mut out_map, &mut damage, &mut candidates)
                 {
-                    
+                    // self-terminating
                 }
             }
         }
@@ -697,12 +702,11 @@ fn main() {
         while !candidates.is_empty()
         {
             let choice_index = rng.rand_range(0..candidates.len() as u64) as usize;
-            let choice = candidates_list[choice_index].clone();
-            candidates_list.remove(choice_index);
+            let choice = candidates.iter().nth(choice_index).unwrap().clone();
             candidates.remove(&choice);
-            while collapse(choice, &mut rng, &mut out_map, &mut damage, &mut candidates, &mut candidates_list)
+            while collapse(choice, &mut rng, &mut out_map, &mut damage, &mut candidates)
             {
-                
+                // self-terminating
             }
         }
     }
