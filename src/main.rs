@@ -235,9 +235,21 @@ fn main() {
         Field([Vec<f64>; 4]),
     }
     
+    impl SuperTile
+    {
+        fn is_real(&self) -> bool
+        {
+            match self
+            {
+                SuperTile::Tile(_) => true,
+                _ => false
+            }
+        }
+    }
     
-    let width  = 10;
-    let height =  8;
+    
+    let width  = 10*4;
+    let height =  8*4;
     let mut out_map : Vec<Vec<SuperTile>> = vec!(vec!(SuperTile::Field(
         [vec!(1.0; (max_index) as usize),
          vec!(1.0; (max_index) as usize),
@@ -284,7 +296,7 @@ fn main() {
         }
         match tile
         {
-            SuperTile::Tile(id) => edge_weight(*id, edge, direction),
+            SuperTile::Tile(id) => edge_weight_reverse(*id, edge, direction),
             SuperTile::Field(fields) =>
             {
                 let mut total = 0.0;
@@ -298,7 +310,7 @@ fn main() {
                     else
                     {
                         //total += edge_weight(i, edge, direction)
-                        total += edge_weight_reverse(id, edge, direction)
+                        total += edge_weight(id, edge, direction)
                            * f
                            //* glob
                            ;
@@ -306,72 +318,70 @@ fn main() {
                 }
                 total
             }
+            _ => return 1.0
         }
     };
     
     let mut damage = BTreeSet::new();
     let mut candidates = BTreeSet::new();
     
-    let recalculate_around = |
+    let recalculate = |
         out_map : &mut Vec<Vec<SuperTile>>,
         damage : &mut BTreeSet<(usize, usize)>,
         candidates : &mut BTreeSet<(usize, usize)>,
-        (x, y) : (usize, usize)
-        | -> bool
+        (x, y) : (usize, usize),
+        basic_mode : bool
+        |
     {
-        let in_bounds = |out_map : &Vec<Vec<SuperTile>>, (x, y)| -> bool { x < out_map[0].len() && y < out_map.len() };
+        let in_bounds = |out_map : &Vec<Vec<SuperTile>>, (x, y)| -> bool { x > 0 && x < out_map[0].len()-1 && y > 0 && y < out_map.len()-1 };
         if !in_bounds(out_map, (x, y))
         {
-            return false;
+            return 0;
         }
-        let base = out_map[y][x].clone();
+        let mut damaged = false;
+        let mut num_real_neighbors = 0;
+        let mut neighbor_realness = [false, false, false, false];
         for (direction, offset) in directions.iter().enumerate()
         {
             let offset = ((offset.0 + x as isize) as usize, (offset.1 + y as isize) as usize);
-            let in_bounds = |out_map : &Vec<Vec<SuperTile>>, (x, y)| -> bool { x > 0 && x < out_map[0].len()-1 && y > 0 && y < out_map.len()-1 };
-            if !in_bounds(out_map, offset)
+            let neighbor = out_map[offset.1][offset.0].clone();
+            // FIXME ignore neighbors that are all 0s
+            match &mut out_map[y][x]
             {
-                continue;
-            }
-            let tile = &mut out_map[offset.1][offset.0];
-            let mut num_possible_ids = 0;
-            let mut last_possible_id = 0;
-            let mut damaged = false;
-            match tile
-            {
-                SuperTile::Tile(_) => continue,
+                SuperTile::Tile(_) => return 0,
                 SuperTile::Field(fields) =>
                 {
-                    let mut origin_is_real_tile = false;
-                    match base
+                    
+                    let field = &mut fields[direction];
+                    if neighbor.is_real()
                     {
-                        SuperTile::Tile(_) =>
-                        {
-                            origin_is_real_tile = true;
-                            if !candidates.contains(&offset)
-                            {
-                                candidates.insert(offset);
-                                //println!("added {},{} to candidates", offset.0, offset.1);
-                            }
-                        }
-                        _ => {}
+                        num_real_neighbors += 1;
                     }
-                    let field = &mut fields[(direction+2)%4];
-                    let mut total = 0.0;
+                    neighbor_realness[direction] = neighbor.is_real();
+                    
                     for j in 0..field.len()
                     {
                         if field[j] != 0.0
                         {
-                            let modifier = actual_weight(&base, j, direction);
+                            let modifier = actual_weight(&neighbor, j, (direction+2)%4);
                             if modifier != 0.0
                             {
-                                if origin_is_real_tile
+                                if neighbor.is_real() && !basic_mode
                                 {
-                                    field[j] = field[j]*0.2 + modifier*0.8; // controls the overall amount of chaos in the system; pure modifier is low-chaos, pure field is high-chaos
-                                    if field[j] == 0.0 // because of numerical instability/underflow
+                                    // controls the overall amount of chaos in the system; pure modifier is low-chaos
+                                    //field[j] = 1.0*0.05 + modifier*0.95;
+                                    field[j] = modifier;
+                                    //field[j] = field[j]*0.2 + modifier*0.8;
+                                    if field[j] == 0.0 // because of numerical instability
                                     {
+                                        panic!("?????????????????????");
                                         field[j] = modifier;
                                     }
+                                }
+                                else if !basic_mode
+                                {
+                                    // controls the overall amount of chaos in the system; pure modifier is low-chaos
+                                    field[j] = field[j]*0.995 + modifier*0.005;
                                 }
                             }
                             else
@@ -383,73 +393,68 @@ fn main() {
                                 damaged = true;
                             }
                         }
-                        total += field[j];
-                        if field[j] > 0.0
-                        {
-                            num_possible_ids += 1;
-                            last_possible_id = j;
-                        }
                     }
-                    if total > 0.0
+                }
+                _ => return 0
+            }
+        }
+        let mut dead = false;
+        match &mut out_map[y][x]
+        {
+            SuperTile::Tile(_) => return 0,
+            SuperTile::Field(fields) =>
+            {
+                if damaged
+                {
+                    damage.insert((x + 1, y    ));
+                    damage.insert((x - 1, y    ));
+                    damage.insert((x    , y + 1));
+                    damage.insert((x    , y - 1));
+                    for j in 0..fields[0].len()
                     {
-                        for j in 0..field.len()
+                        for i in 0..fields.len()
                         {
-                            field[j] /= total;
-                        }
-                    }
-                    drop(field);
-                    if damaged
-                    {
-                        //for y in -1..1
-                        //{
-                        //    for x in -1..1
-                        //    {
-                        //        damage.insert((offset.0 + x as usize, offset.1 + y as usize));
-                        //    }
-                        //}
-                        damage.insert(offset);
-                        for j in 0..fields[0].len()
-                        {
-                            for i in 0..fields.len()
+                            if fields[i][j] == 0.0
                             {
-                                if fields[i][j] == 0.0
-                                {
-                                    fields[0][j] = 0.0;
-                                    fields[1][j] = 0.0;
-                                    fields[2][j] = 0.0;
-                                    fields[3][j] = 0.0;
-                                }
+                                fields[0][j] = 0.0;
+                                fields[1][j] = 0.0;
+                                fields[2][j] = 0.0;
+                                fields[3][j] = 0.0;
+                                continue;
                             }
                         }
                     }
-                    //assert!(total > 0.0, "failure at {},{} with {}", offset.0, offset.1, total);
+                }
+                if num_real_neighbors > 0 && !candidates.contains(&(x, y))
+                {
+                    candidates.insert((x, y));
                 }
             }
-            //if num_possible_ids == 1
-            //{
-            //    *tile = SuperTile::Tile(last_possible_id);
-            //    if !damaged
-            //    {
-            //        damage.insert(offset);
-            //    }
-            //}
+            _ => return 0
         }
-        true
+        if damaged
+        {
+            return 2;
+        }
+        else
+        {
+            return 1;
+        }
     };
     
     for y in 0..height+2
     {
         out_map[y][0]       = SuperTile::Tile(map[1][0]);
         out_map[y][width+1] = SuperTile::Tile(*map[1].last().unwrap());
-        damage.insert((0, y));
-        damage.insert((width+1, y));
+        damage.insert((1, y));
+        damage.insert((width, y));
     }
     for x in 0..width+2
     {
         out_map[0][x]        = SuperTile::Tile(map[0][1]);
         out_map[height+1][x] = SuperTile::Tile(map.last().unwrap()[1]);
-        damage.insert((x, 0));
-        damage.insert((x, height+1));
+        damage.insert((x, 1));
+        damage.insert((x, height));
     }
     out_map[0][0] = SuperTile::Tile(map[0][0]);
     *out_map[0].last_mut().unwrap() = SuperTile::Tile(*map[0].last().unwrap());
@@ -514,18 +519,22 @@ fn main() {
                         let px = out_writer.get_pixel_mut((x*tilesize + 0         ) as u32, (y*tilesize + ty) as u32);
                         px[0] = 255;
                         px[2] = 255;
+                        px[3] = 255;
                         let px = out_writer.get_pixel_mut((x*tilesize + tilesize-1) as u32, (y*tilesize + ty) as u32);
                         px[0] = 255;
                         px[2] = 255;
+                        px[3] = 255;
                     }
                     for tx in 0..tilesize
                     {
                         let px = out_writer.get_pixel_mut((x*tilesize + tx) as u32, (y*tilesize + 0         ) as u32);
                         px[0] = 255;
                         px[2] = 255;
+                        px[3] = 255;
                         let px = out_writer.get_pixel_mut((x*tilesize + tx) as u32, (y*tilesize + tilesize-1) as u32);
                         px[0] = 255;
                         px[2] = 255;
+                        px[3] = 255;
                     }
                 }
             }
@@ -554,14 +563,28 @@ fn main() {
         {
             let choice = damage.iter().next().unwrap().clone();
             damage.remove(&choice);
-            recalculate_around(out_map, damage, candidates, choice);
-            i += 1;
-            if collapse_iteration == 1 || collapse_iteration == 14 || collapse_iteration == 15
+            let worth_drawing = recalculate(out_map, damage, candidates, choice, false);
+            if worth_drawing != 0
             {
-                write_image(out_map, format!("{}-b{}", collapse_iteration.to_string(), i), choice);
+                i += 1;
+                if false && (collapse_iteration == 1 || collapse_iteration == 14 || collapse_iteration == 15)
+                {
+                    write_image(out_map, format!("{}-b{}", collapse_iteration.to_string(), i), choice);
+                }
             }
         }
-        println!("recalcuated {} tiles", i);
+        //for y in 1..height+1
+        //{
+        //    for x in 1..width+1
+        //    {
+        //        let worth_drawing = recalculate(out_map, damage, candidates, (x, y), true);
+        //        if worth_drawing == 2
+        //        {
+        //            panic!("logic error: found something worth re-damaging after exhausting damage options");
+        //        }
+        //    }
+        //}
+        println!("recalculated {} tiles", i);
     };
     
     recalculate_all(&mut out_map, &mut damage, &mut candidates, collapse_iteration);
@@ -570,13 +593,15 @@ fn main() {
     let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
     //let time = 1627830772369;
     //let time = 1627832395045;
-    let time = 1627836423901;
+    //let time = 1627836423901;
     println!("seed: {}", time);
     let mut rng = oorandom::Rand64::new(time);
     
-    let comp = std::cmp::max(1, (((width+2)*(height+2)) as f32/64.0).floor() as usize);
-    let comp = std::cmp::max(1, (((width+2)*(height+2)) as f32/8.0).floor() as usize);
-    let comp = 1;
+    //let comp = std::cmp::max(1, (((width+2)*(height+2)) as f32/64.0).floor() as usize);
+    //let comp = std::cmp::max(1, (((width+2)*(height+2)) as f32/32.0).floor() as usize);
+    let comp = std::cmp::max(1, (((width+2)*(height+2)) as f32/16.0).floor() as usize);
+    //let comp = std::cmp::max(1, (((width+2)*(height+2)) as f32/8.0).floor() as usize);
+    //let comp = 1;
     
     let mut collapse = |choice : (usize, usize),
         rng : &mut oorandom::Rand64,
@@ -604,7 +629,7 @@ fn main() {
                     }
                 }
                 force = possible_fields.len() < 2;
-                if true
+                if false
                 {
                     if possible_fields.len() > 0
                     {
@@ -636,19 +661,22 @@ fn main() {
         }
         if decision == 0
         {
-            decision = most_common;
+            decision = most_common; // FIXME: use a random neighbor instead
         }
         let old_copy = out_map.clone();
         let old_damage = damage.clone();
         let old_candidates = candidates.clone();
         out_map[choice.1][choice.0] = SuperTile::Tile(decision);
-        if collapse_iteration%comp == 0
+        if false && collapse_iteration%comp == 0
         {
             println!("writing image for {}", collapse_iteration);
             write_image(out_map, format!("{}-a1", collapse_iteration.to_string()), choice);
             println!("wrote image");
         }
-        damage.insert(choice);
+        damage.insert((choice.0 + 1, choice.1    ));
+        damage.insert((choice.0 - 1, choice.1    ));
+        damage.insert((choice.0    , choice.1 + 1));
+        damage.insert((choice.0    , choice.1 - 1));
         recalculate_all(out_map, damage, candidates, collapse_iteration);
         let get_failed = ||
         {
@@ -686,7 +714,7 @@ fn main() {
             }
             false
         };
-        let failed = [get_failed(), false][1];
+        let failed = [get_failed(), false][0];
         if failed
         {
             *out_map = old_copy;
@@ -704,7 +732,10 @@ fn main() {
                     fields[3][decision] = 0.0;
                 }
             }
-            damage.insert(choice);
+            damage.insert((choice.0 + 1, choice.1    ));
+            damage.insert((choice.0 - 1, choice.1    ));
+            damage.insert((choice.0    , choice.1 + 1));
+            damage.insert((choice.0    , choice.1 - 1));
             recalculate_all(out_map, damage, candidates, collapse_iteration);
         }
         else
