@@ -4,8 +4,7 @@ use std::env::args as args;
 use image::io::Reader as ImageReader;
 #[allow(unused_imports)]
 use image::{DynamicImage, GenericImageView, Pixel};
-use std::collections::{BTreeMap, BTreeSet};
-
+use std::collections::{BTreeMap};
 
 #[derive(Copy)]
 #[derive(Clone)]
@@ -28,11 +27,12 @@ impl RgbaF {
     {
         Rgba{r : (self.r * 255.0).round() as u8, g : (self.g * 255.0).round() as u8, b : (self.b * 255.0).round() as u8, a : (self.a * 255.0).round() as u8}
     }
+    //#[inline(always)]
+    //fn add(&self, other : &RgbaF) -> RgbaF
+    //{
+    //    RgbaF{r : self.r + other.r, g : self.g + other.g, b : self.b + other.b, a : self.a + other.a}
+    //}
     #[inline(always)]
-    fn add(&self, other : &RgbaF) -> RgbaF
-    {
-        RgbaF{r : self.r + other.r, g : self.g + other.g, b : self.b + other.b, a : self.a + other.a}
-    }
     fn add_mut(&mut self, other : &RgbaF)
     {
         self.r += other.r;
@@ -95,17 +95,23 @@ fn eq(a : &Vec<Vec<Rgba>>, b : &Vec<Vec<Rgba>>) -> bool
 }
 */
 
-const tilesize : usize = 16;
+const TILESIZE : usize = 16;
+const DIRECTIONS : [(isize, isize); 4] = [(1, 0), (0, 1), (-1, 0), (0, -1)];
+//const DIRECTIONS : [(isize, isize); 8] = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)];
+fn get_opposite_direction(dir_index : usize) -> usize
+{
+    (dir_index+DIRECTIONS.len()/2)%DIRECTIONS.len()
+}
 
 fn get_tile_from_image(a : &Vec<Vec<Rgba>>, (x, y) : (usize, usize)) -> Vec<Rgba>
 {
-    let mut ret = vec!(Rgba::new(255, 255, 255, 255); tilesize*tilesize);
+    let mut ret = vec!(Rgba::new(255, 255, 255, 255); TILESIZE*TILESIZE);
     
-    for iy in 0..tilesize
+    for iy in 0..TILESIZE
     {
-        for ix in 0..tilesize
+        for ix in 0..TILESIZE
         {
-            ret[iy*tilesize + ix] = a[y*tilesize+iy][x*tilesize+ix];
+            ret[iy*TILESIZE + ix] = a[y*TILESIZE+iy][x*TILESIZE+ix];
         }
     }
     
@@ -114,14 +120,40 @@ fn get_tile_from_image(a : &Vec<Vec<Rgba>>, (x, y) : (usize, usize)) -> Vec<Rgba
 
 type TileId = usize;
 
-fn default_neighbor(max_index : TileId) -> Vec<f64>
+
+//#[derive(Clone)]
+//#[derive(Debug)]
+//#[derive(PartialEq)]
+//enum SuperTile
+//{
+//    Tile(TileId),
+//    Field([Vec<f64>; DIRECTIONS.len()]),
+//    Dead
+//}
+
+#[derive(Clone)]
+#[derive(Copy)]
+#[derive(Debug)]
+#[derive(PartialEq)]
+//enum SuperTile
+enum TileType
 {
-    let mut ret = Vec::with_capacity(max_index);
-    for _ in 0..max_index
+    Tile(TileId),
+    Field,
+    Dead
+}
+
+impl TileType
+{
+    fn is_real(&self) -> bool
     {
-        ret.push(0.0);
+        match self
+        {
+            //SuperTile::Tile(_) => true,
+            TileType::Tile(_) => true,
+            _ => false
+        }
     }
-    ret
 }
 
 fn main() {
@@ -140,585 +172,807 @@ fn main() {
         px_map.push(row);
     }
     
-    let mut max_index = 0;
-    let mut tile_to_id = BTreeMap::new();
-    let mut id_to_tile = Vec::new();
-    let mut map = Vec::with_capacity(img.height() as usize/tilesize);
-    for y in 0..img.height() as usize/tilesize
+    struct Collapser
     {
-        let mut row = Vec::with_capacity(img.width() as usize/tilesize);
-        for x in 0..img.width() as usize/tilesize
-        {
-            let tile = get_tile_from_image(&px_map, (x, y));
-            let id = tile_to_id.entry(tile.clone()).or_insert_with(|| {max_index += 1; max_index - 1});
-            if *id >= id_to_tile.len()
-            {
-                id_to_tile.push(tile);
-            }
-            
-            row.push(*id);
-            //print!("{} ", *id);
-        }
-        //println!();
-        map.push(row);
-    }
-    println!("number of unique tiles: {}", max_index);
+        max_index : TileId,
+        //tile_to_id : BTreeMap<Vec<Rgba>, usize>,
+        id_to_tile : Vec<Vec<Rgba>>,
+        //map : Vec<TileId>,
+        forbidden_tiles : Vec<TileId>,
+        freqs : Vec<f64>,
+        total_freq : f64,
+        ships : Vec<f64>,
+        most_common : TileId,
+        width : usize,
+        height : usize,
+        out_map_fields : Vec<f64>,
+        out_map_types : Vec<TileType>,
     
-    let mut forbidden_tiles = BTreeSet::new();
-    forbidden_tiles.insert(map[1][0]);
-    forbidden_tiles.insert(*map[1].last().unwrap());
-    forbidden_tiles.insert(map[0][1]);
-    forbidden_tiles.insert(map.last().unwrap()[1]);
-    forbidden_tiles.insert(map[0][0]);
-    forbidden_tiles.insert(*map[0].last().unwrap());
-    forbidden_tiles.insert(map.last().unwrap()[0]);
-    forbidden_tiles.insert(*map.last().unwrap().last().unwrap());
+        damage : Vec<(isize, isize)>,
+        candidates : Vec<(isize, isize)>,
     
-    const directions : [(isize, isize); 4] = [(1, 0), (0, 1), (-1, 0), (0, -1)];
-    //const directions : [(isize, isize); 8] = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)];
-    let get_opposite_direction = |dir_index : usize| -> usize
-    {
-        (dir_index+directions.len()/2)%directions.len()
-    };
-    
-    let mut freqs = vec!(0.0; max_index);
-    let mut ships = Vec::with_capacity(max_index);
-    for _ in 0..max_index
-    {
-        ships.push(vec![default_neighbor(max_index); directions.len()]);
+        out_freqs : Vec<f64>,
+        out_total_freq : f64,
+        
+        namebase : String
     }
     
-    println!("freqs len: {}", freqs.len());
-    println!("ships len: {}", ships.len());
-    let in_bounds = |(x, y)| x < map[0].len() && y < map.len();
-    #[allow(unused_assignments)]
-    let mut most_common = 0;
-    let mut most_common_freq = 0.0;
-    for y in 0..map.len()
+    impl Collapser
     {
-        for x in 0..map[0].len()
+        fn init(px_map : &Vec<Vec<Rgba>>, width : usize, height : usize, namebase : String) -> Collapser
         {
-            freqs[map[y][x]] += 1.0;
-            let freq = freqs[map[y][x]];
-            for (i, offset) in directions.iter().enumerate()
+            let mut max_index = 0;
+            let mut tile_to_id = BTreeMap::new();
+            let mut id_to_tile = Vec::new();
+            let mut map = Vec::with_capacity(height as usize/TILESIZE);
+            for y in 0..height/TILESIZE
             {
-                let offset = ((offset.0 + x as isize) as usize, (offset.1 + y as isize) as usize);
-                let value;
-                if in_bounds(offset)
+                let mut row = Vec::with_capacity(width as usize/TILESIZE);
+                for x in 0..width/TILESIZE
                 {
-                    value = map[offset.1][offset.0];
+                    let tile = get_tile_from_image(&px_map, (x, y));
+                    let id = tile_to_id.entry(tile.clone()).or_insert_with(|| {max_index += 1; max_index - 1});
+                    if *id >= id_to_tile.len()
+                    {
+                        id_to_tile.push(tile);
+                    }
+                    
+                    row.push(*id);
+                    //print!("{} ", *id);
+                }
+                //println!();
+                map.push(row);
+            }
+            println!("number of unique tiles: {}", max_index);
+            
+            let mut forbidden_tiles = Vec::new();
+            forbidden_tiles.push(map[0][0]);
+            
+            //let mut ships = Vec::with_capacity(max_index);
+            //for _ in 0..max_index
+            //{
+            //    ships.push(vec![default_neighbor(max_index); DIRECTIONS.len()]);
+            //}
+            let mut ships = vec!(0.0; max_index*max_index*DIRECTIONS.len());
+    
+            let mut freqs = vec!(0.0; max_index);
+            
+            //fn in_bounds(map : &Vec<Vec<TileId>>, (x, y) : (isize, isize)) -> bool
+            //{
+            //    x >= 0 && x < map[0].len() as isize && y >= 0 && y < map.len() as isize
+            //}
+            
+            #[allow(unused_assignments)]
+            let mut most_common = 0;
+            let mut most_common_freq = 0.0;
+            for y in 0..map.len()
+            {
+                for x in 0..map[0].len()
+                {
+                    freqs[map[y][x]] += 1.0;
                     let id = map[y][x];
+                    let freq = freqs[map[y][x]];
                     if freq > most_common_freq
                     {
                         most_common_freq = freq;
                         most_common = id;
                     }
-                    ships[id][i][value] += 1.0;
-                    //println!("added to direction {} for tile type {}", i, id);
-                    //ships[id][i][value] = 1.0;
-                }
-                else
-                {
-                    //println!("direction {} for tile centered at {},{} is out of bounds", i, x, y);
-                }
-            }
-        }
-    }
-    
-    let total_freq : f64 = freqs.iter().sum();
-    
-    for i in 0..ships.len()
-    {
-        if forbidden_tiles.contains(&i)
-        {
-            continue;
-        }
-        for j in 0..directions.len()
-        {
-            //for other in &ships[i][j]
-            //{
-            //    //total += other;
-            //}
-            let mut total = 0.0;
-            for other in &ships[i][j]
-            {
-                total += other;
-            }
-            //assert!(total > 0.0, "failed tile type {} direction {}", i, j);
-            for other in &mut ships[i][j]
-            {
-                *other /= total;
-            }
-        }
-    }
-    
-    //#[derive(Clone)]
-    //#[derive(Debug)]
-    //#[derive(PartialEq)]
-    //enum SuperTile
-    //{
-    //    Tile(TileId),
-    //    Field([Vec<f64>; directions.len()]),
-    //    Dead
-    //}
-    
-    #[derive(Clone)]
-    #[derive(Copy)]
-    #[derive(Debug)]
-    #[derive(PartialEq)]
-    //enum SuperTile
-    enum TileType
-    {
-        Tile(usize),
-        Field,
-        Dead
-    }
-    
-    impl TileType
-    {
-        fn is_real(&self) -> bool
-        {
-            match self
-            {
-                //SuperTile::Tile(_) => true,
-                TileType::Tile(_) => true,
-                _ => false
-            }
-        }
-    }
-    
-    let width  = 10*2;
-    let height =  8*2;
-    //let width  = 8*8;
-    //let height = 8*8;
-    //let mut out_map : Vec<SuperTile> = vec!(SuperTile::Field(Default::default()); (width+2)*(height+2));
-    // one cell at a time, one direction at a time, one tile at a time, one row at a time
-    let mut out_map_fields : Vec<f64> = vec!(1.0; (width+2)*(height+2)*directions.len()*max_index);
-    let mut out_map_types : Vec<TileType> = vec!(TileType::Field; (width+2)*(height+2));
-    let get_type = |out_map_types : &Vec<TileType>, x : usize, y : usize|
-    {
-        let index = y*(width+2)+x;
-        out_map_types[index].clone()
-    };
-    let get_all_fields : Box<dyn for<'a> Fn(&'a Vec<f64>, usize, usize) -> &'a [f64]> = Box::new(|out_map_fields, x, y|
-    {
-        let start_index = (y*(width+2)+x)*directions.len()*max_index;
-        let end_index = start_index + directions.len()*max_index;
-        &out_map_fields[start_index..end_index]
-    });
-    let get_fields : Box<dyn for<'a> Fn(&'a Vec<f64>, usize, usize, usize) -> &'a [f64]> = Box::new(|out_map_fields, x, y, direction|
-    {
-        let start_index = (y*(width+2)+x)*directions.len()*max_index + direction*max_index;
-        let end_index = start_index + max_index;
-        &out_map_fields[start_index..end_index]
-    });
-    let get_type_mut : Box<dyn for<'a> Fn(&'a mut Vec<TileType>, usize, usize) -> &'a mut TileType> = Box::new(|out_map_types, x , y |
-    {
-        let index = y*(width+2)+x;
-        &mut out_map_types[index]
-    });
-    let get_all_fields_mut : Box<dyn for<'a> Fn(&'a mut Vec<f64>, usize, usize) -> &'a mut [f64]> = Box::new(|out_map_fields, x , y|
-    {
-        let start_index = (y*(width+2)+x)*directions.len()*max_index;
-        let end_index = start_index + directions.len()*max_index;
-        &mut out_map_fields[start_index..end_index]
-    });
-    let get_fields_mut : Box<dyn for<'a> Fn(&'a mut Vec<f64>, usize, usize, usize) -> &'a mut [f64]> = Box::new(|out_map_fields, x, y, direction|
-    {
-        let start_index = (y*(width+2)+x)*directions.len()*max_index + direction*max_index;
-        let end_index = start_index + max_index;
-        &mut out_map_fields[start_index..end_index]
-    });
-    
-    
-    let edge_weight = |origin : TileId, edge : TileId, direction : usize| -> f64
-    {
-        if forbidden_tiles.contains(&edge) { 0.0 }
-        else { ships[origin][direction][edge] }
-    };
-    let edge_weight_reverse = |origin : TileId, edge : TileId, direction : usize| -> f64
-    {
-        if forbidden_tiles.contains(&edge) { 0.0 }
-        else { ships[edge][get_opposite_direction(direction)][origin] }
-    };
-    let actual_weight = |(tile_type, fields) : (TileType, &[f64]), edge : TileId, direction : usize| -> f64
-    {
-        if forbidden_tiles.contains(&edge)
-        {
-            return 0.0;
-        }
-        match tile_type
-        {
-            TileType::Tile(id) => edge_weight_reverse(id, edge, direction),
-            TileType::Field =>
-            {
-                let mut total = 0.0;
-                for id in 0..max_index
-                {
-                    
-                    let mut glob = 1.0;
-                    for i in 0..directions.len()
+                    for (i, offset) in DIRECTIONS.iter().enumerate()
                     {
-                        glob *= fields[i*max_index + id];
-                    }
-                    if glob == 0.0
-                    {
-                        continue
-                    }
-                    else
-                    {
-                        //total += edge_weight(i, edge, direction)
-                        total += edge_weight(id, edge, direction)
-                           * fields[direction*max_index + id]
-                           //* glob
-                           ;
+                        let offset = (offset.0 + x as isize, offset.1 + y as isize);
+                        //if in_bounds(&map, offset)
+                        {
+                            // wrapping
+                            let value = map[offset.1.wrapping_rem_euclid(map.len() as isize) as usize][offset.0.wrapping_rem_euclid(map[0].len() as isize) as usize];
+                            // non-wrapping
+                            //value = map[offset.1 as usize][offset.0 as usize];
+                            //ships[id][i][value] += 1.0;
+                            ships[id*max_index*DIRECTIONS.len() + value*DIRECTIONS.len() + i] += 1.0;
+                            if id == 1 && value == 0 && i == 1
+                            {
+                                println!("added entry for {}->{} in direction {} at {},{}", id, value, i, x, y);
+                            }
+                            //println!("added to direction {} for tile type {}", i, id);
+                            //ships[id][i][value] = 1.0;
+                        }
+                        //else
+                        //{
+                        //    //println!("direction {} for tile centered at {},{} is out of bounds", i, x, y);
+                        //}
                     }
                 }
-                total
-            }
-            _ => return 1.0
-        }
-    };
-    
-    let mut damage = Vec::new();
-    let mut candidates = Vec::new();
-    
-    let mut scratch_fields = vec!(1.0; max_index*directions.len());
-    
-    let mut recalculate = |
-        out_map_types : &mut Vec<TileType>,
-        out_map_fields : &mut Vec<f64>,
-        damage : &mut Vec<(usize, usize)>,
-        candidates : &mut Vec<(usize, usize)>,
-        (x, y) : (usize, usize),
-        basic_mode : bool
-        |
-    {
-        let in_bounds = |x, y| -> bool { x > 0 && x < width+1 && y > 0 && y < height+1 };
-        if !in_bounds(x, y)
-        {
-            return 0;
-        }
-        let center_type = get_type(out_map_types, x, y);
-        if center_type != TileType::Field
-        {
-            return 0;
-        }
-        
-        let mut damaged = false;
-        let mut num_real_neighbors = 0;
-        let mut neighbor_realness = [false; directions.len()];
-        // copy_from_slice
-        scratch_fields.copy_from_slice(get_all_fields(out_map_fields, x, y));
-        
-        for (direction, offset) in directions.iter().enumerate()
-        {
-            let offset = ((offset.0 + x as isize) as usize, (offset.1 + y as isize) as usize);
-            let neighbor_type = get_type(out_map_types, offset.0, offset.1).clone();
-            if neighbor_type.is_real()
-            {
-                num_real_neighbors += 1;
-                neighbor_realness[direction] = true;
-            }
-            if neighbor_type == TileType::Dead
-            {
-                continue;
             }
             
-            let neighbor_fields = get_all_fields(out_map_fields, offset.0, offset.1);
-            for j in 0..max_index
+            let total_freq : f64 = freqs.iter().sum();
+            
+            for a in 0..max_index
             {
-                if scratch_fields[j] != 0.0
+                if forbidden_tiles.contains(&a) // FIXME: ?????????
                 {
-                    let mut modifier = actual_weight((neighbor_type, &neighbor_fields), j, get_opposite_direction(direction));
-                    if modifier != 0.0
+                    continue;
+                }
+                for direction in 0..DIRECTIONS.len()
+                {
+                    //for other in &ships[i][j]
+                    //{
+                    //    //total += other;
+                    //}
+                    let mut total = 0.0;
+                    
+                    //ships[a*max_index*DIRECTIONS.len() + b*DIRECTIONS.len() + direction]
+                    for b in 0..max_index
                     {
-                        while (modifier.powi(8) as f32).is_subnormal()
+                        let other = ships[a*max_index*DIRECTIONS.len() + b*DIRECTIONS.len() + direction];
+                        total += other;
+                    }
+                    assert!(total > 0.0, "failed tile type {} direction {}", a, direction);
+                    for b in 0..max_index
+                    {
+                        let other = &mut ships[a*max_index*DIRECTIONS.len() + b*DIRECTIONS.len() + direction];
+                        *other /= total;
+                    }
+                }
+            }
+            
+            // ensure that all neighbor facts of form "A can exist to the right of B" match all facts of the form "B can exist to the left of A"
+            for a in 0..max_index
+            {
+                for b in 0..max_index
+                {
+                    for dir in 0..DIRECTIONS.len()
+                    {
+                        //ships[a*max_index*DIRECTIONS.len() + b*DIRECTIONS.len() + dir]
+                        let aw = ships[a*max_index*DIRECTIONS.len() + b*DIRECTIONS.len() + dir];
+                        let bw = ships[b*max_index*DIRECTIONS.len() + a*DIRECTIONS.len() + get_opposite_direction(dir)];
+                        if (aw == 0.0) != (bw == 0.0)
                         {
-                            modifier *= 2.0;
+                            panic!("{} and {} don't match up for direction {} ({} vs {})", a, b, dir, aw, bw);
                         }
-                        if neighbor_type.is_real() && !basic_mode
+                    }
+                }
+            }
+    
+            let mut width  = 10*4;
+            let mut height =  8*4;
+            //let mut width  = 10*2;
+            //let mut height =  8*2;
+            width  += 2;
+            height += 2;
+            //let width  = 8*8;
+            //let height = 8*8;
+            //let mut out_map : Vec<SuperTile> = vec!(SuperTile::Field(Default::default()); (width+2)*(height+2));
+            // one cell at a time, one direction at a time, one tile at a time, one row at a time
+            let out_map_fields = vec!(1.0; width*height*DIRECTIONS.len()*max_index);
+            let out_map_types  = vec!(TileType::Field; width*height);
+            
+            let candidates = Vec::new();
+            let damage = Vec::new();
+            
+            let out_freqs = vec!(0.0; max_index);
+            let out_total_freq = 0.0;
+            
+            let mut collapse = Collapser { max_index, id_to_tile, forbidden_tiles, freqs, total_freq, ships, most_common, out_map_fields, out_map_types, width, height, out_freqs, out_total_freq, damage, candidates, namebase };
+            
+            collapse.init_edges();
+            
+            collapse
+        }
+        fn init_edges(&mut self)
+        {
+            for y in 0..self.height as isize
+            {
+                *self.get_type_mut(           0, y) = TileType::Tile(0);
+                *self.get_type_mut(self.width as isize-1, y) = TileType::Tile(0);
+                self.damage.push((1, y));
+                self.damage.push((self.width as isize-2, y));
+            }
+            for x in 0..self.width as isize
+            {
+                *self.get_type_mut(x,             0) = TileType::Tile(0);
+                *self.get_type_mut(x, self.height as isize-1) = TileType::Tile(0);
+                self.damage.push((x, 1));
+                self.damage.push((x, self.height as isize-2));
+            }
+        }
+        #[inline(always)]
+        fn get_type(&self, x : isize, y : isize) -> TileType
+        {
+            let x = x.wrapping_rem_euclid(self.width as isize) as usize;
+            let y = y.wrapping_rem_euclid(self.height as isize) as usize;
+            let index = y*self.width+x;
+            self.out_map_types[index]
+        }
+        #[inline(always)]
+        fn get_all_fields<'a>(&'a self, x : isize, y : isize) -> &'a [f64]
+        {
+            let x = x.wrapping_rem_euclid(self.width as isize) as usize;
+            let y = y.wrapping_rem_euclid(self.height as isize) as usize;
+            let start_index = (y*self.width+x)*DIRECTIONS.len()*self.max_index;
+            let end_index = start_index + DIRECTIONS.len()*self.max_index;
+            &self.out_map_fields[start_index..end_index]
+        }
+        //fn get_fields<'a>(&'a self, x : usize, y : usize, direction : usize) -> &'a [f64]
+        //{
+        //    let x = x%self.width;
+        //    let y = y%self.height;
+        //    let start_index = (y*self.width+x)*DIRECTIONS.len()*self.max_index + direction*self.max_index;
+        //    let end_index = start_index + self.max_index;
+        //    &self.out_map_fields[start_index..end_index]
+        //}
+        #[inline(always)]
+        fn get_type_mut<'a>(&'a mut self, x : isize, y : isize) -> &'a mut TileType
+        {
+            let x = x.wrapping_rem_euclid(self.width as isize) as usize;
+            let y = y.wrapping_rem_euclid(self.height as isize) as usize;
+            let index = y*self.width+x;
+            &mut self.out_map_types[index]
+        }
+        #[inline(always)]
+        fn get_all_fields_mut<'a>(&'a mut self, x : isize, y : isize) -> &'a mut [f64]
+        {
+            let x = x.wrapping_rem_euclid(self.width as isize) as usize;
+            let y = y.wrapping_rem_euclid(self.height as isize) as usize;
+            let start_index = (y*self.width+x)*DIRECTIONS.len()*self.max_index;
+            let end_index = start_index + DIRECTIONS.len()*self.max_index;
+            &mut self.out_map_fields[start_index..end_index]
+        }
+        //fn get_fields_mut<'a>(&'a mut self, x : usize, y : usize, direction : usize) -> &'a mut [f64]
+        //{
+        //    let x = x%self.width;
+        //    let y = y%self.height;
+        //    let start_index = (y*self.width+x)*DIRECTIONS.len()*self.max_index + direction*self.max_index;
+        //    let end_index = start_index + self.max_index;
+        //    &mut self.out_map_fields[start_index..end_index]
+        //}
+        #[inline(always)]
+        fn edge_weight(&self, a : TileId, b : TileId, dir : usize) -> f64
+        {
+            //if self.forbidden_tiles.contains(&edge) { 0.0 }
+            //else { self.ships[origin][direction][edge] }
+            
+            let index = a*self.max_index*DIRECTIONS.len() + b*DIRECTIONS.len() + dir;
+            //let index = index%self.ships.len();
+            //self.ships[index]
+            unsafe { *self.ships.get_unchecked(index) }
+            //self.ships[origin][direction][edge]
+        }
+        #[inline(always)]
+        fn actual_weight(&self, (tile_type, fields) : (TileType, &[f64]), edge : TileId, direction : usize) -> f64
+        {
+            match tile_type
+            {
+                //TileType::Tile(id) => self.edge_weight(edge, id, get_opposite_direction(direction)), // ????????????
+                TileType::Tile(id) => self.edge_weight(id, edge, direction),
+                TileType::Field =>
+                {
+                    //let opposite_direction = get_opposite_direction(direction);
+                    let mut total = 0.0;
+                    for id in 0..self.max_index
+                    {
+                        //let mut glob : f64 = 1.0;
+                        //for i in 0..DIRECTIONS.len()
+                        //{
+                        //    glob *= fields[i + id*DIRECTIONS.len()];
+                        //}
+                        let glob;
+                        if DIRECTIONS.len() == 4 // optimizes away
                         {
-                            scratch_fields[j] = modifier;
-                        }
-                        else if !basic_mode
-                        {
-                            let orig = scratch_fields[j];
-                            // controls the overall amount of chaos in the system; pure modifier is low-chaos
-                            //field[j] = field[j]*0.995 + modifier*0.005;
-                            //field[j] = field[j]*0.99 + modifier*0.01;
-                            //field[j] = field[j]*0.985 + modifier*0.015;
-                            //field[j] = field[j]*0.98 + modifier*0.02;
-                            //field[j] = field[j]*0.9 + modifier*0.1;
-                            //field[j] = 0.05 + field[j]*0.9 + modifier*0.05;
-                            scratch_fields[j] = 0.005 + scratch_fields[j]*0.985 + modifier*0.010;
-                            // don't let numbers get so small they might get clamped to 0
-                            while (scratch_fields[j].powi(8) as f32).is_subnormal()
+                            // yes this is slightly faster
+                            unsafe
                             {
-                                scratch_fields[j] *= 2.0;
-                            }
-                            if scratch_fields[j] == 0.0
-                            {
-                                scratch_fields[j] = orig;
+                                glob = (*fields.get_unchecked(0 + id*DIRECTIONS.len()) * *fields.get_unchecked(2 + id*DIRECTIONS.len()))
+                                     * (*fields.get_unchecked(1 + id*DIRECTIONS.len()) * *fields.get_unchecked(3 + id*DIRECTIONS.len()));
                             }
                         }
+                        else if DIRECTIONS.len() == 8 // optimizes away
+                        {
+                            unsafe
+                            {
+                                glob = ((*fields.get_unchecked(0 + id*DIRECTIONS.len()) * *fields.get_unchecked(4 + id*DIRECTIONS.len()))
+                                      * (*fields.get_unchecked(2 + id*DIRECTIONS.len()) * *fields.get_unchecked(6 + id*DIRECTIONS.len())))
+                                     * ((*fields.get_unchecked(1 + id*DIRECTIONS.len()) * *fields.get_unchecked(5 + id*DIRECTIONS.len()))
+                                      * (*fields.get_unchecked(3 + id*DIRECTIONS.len()) * *fields.get_unchecked(7 + id*DIRECTIONS.len())));
+                            }
+                        }
+                        else
+                        {
+                            panic!("DIRECTIONS must beeither four or eight elements long");
+                        }
+                        if glob != 0.0
+                        {
+                            unsafe
+                            {
+                                total += self.edge_weight(id, edge, direction) * *fields.get_unchecked(direction + id*DIRECTIONS.len());
+                            }
+                        }
+                    }
+                    total// / self.max_index as f64
+                }
+                _ => 1.0
+            }
+        }
+        
+        fn write_image<T : ToString + std::fmt::Display>(
+            &self,
+            namesuffix : T,
+            highlight : (isize, isize),
+            )
+        {
+            let mut out = DynamicImage::new_rgba8((self.width*TILESIZE) as u32, (self.height*TILESIZE) as u32);
+            let out_writer = out.as_mut_rgba8().unwrap();
+            let mut output_tile = vec!(RgbaF::new(0.0, 0.0, 0.0, 0.0); TILESIZE*TILESIZE);
+            for y in 0..self.height
+            {
+                for x in 0..self.width
+                {
+                    let cell_type = self.get_type(x as isize, y as isize);
+                    match cell_type
+                    {
+                        TileType::Tile(id) =>
+                        {
+                            for ty in 0..TILESIZE
+                            {
+                                for tx in 0..TILESIZE
+                                {
+                                    let px = &self.id_to_tile[id][ty*TILESIZE + tx];
+                                    let rgba = *image::Rgba::from_slice(&[px.r, px.g, px.b, px.a]);
+                                    out_writer.put_pixel((x*TILESIZE + tx) as u32, (y*TILESIZE + ty) as u32, rgba);
+                                }
+                            }
+                        }
+                        TileType::Field =>
+                        {
+                            let cell_fields = self.get_all_fields(x as isize, y as isize);
+                            output_tile.fill(RgbaF::new(0.0, 0.0, 0.0, 0.0));
+                            let mut control = 0.0;
+                            for id in 0..self.max_index
+                            {
+                                for j in 0..DIRECTIONS.len()
+                                { 
+                                    let f = cell_fields[j + id*DIRECTIONS.len()] as f32;
+                                    for ty in 0..TILESIZE
+                                    {
+                                        for tx in 0..TILESIZE
+                                        {
+                                            let px = &self.id_to_tile[id][ty*TILESIZE + tx];
+                                            output_tile[ty*TILESIZE + tx].add_mut(&px.to_float().mult(f));
+                                        }
+                                    }
+                                    control += f;
+                                }
+                            }
+                            for ty in 0..TILESIZE
+                            {
+                                for tx in 0..TILESIZE
+                                {
+                                    let mut px = output_tile[ty*TILESIZE + tx].mult(1.0/control as f32);
+                                    fn overlay (a : f32, b : f32) -> f32
+                                    {
+                                        if a < 0.5
+                                        {
+                                            2.0*a*b
+                                        }
+                                        else
+                                        {
+                                            1.0-2.0*((1.0-a)*(1.0-b))
+                                        }
+                                    }
+                                    px.r = overlay(px.r, 0.7);
+                                    px.g = overlay(px.g, 0.3);
+                                    px.b = overlay(px.b, 0.3);
+                                    let px = px.to_u8();
+                                    let rgba = *image::Rgba::from_slice(&[px.r, px.g, px.b, px.a]);
+                                    out_writer.put_pixel((x*TILESIZE + tx) as u32, (y*TILESIZE + ty) as u32, rgba);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    if (x, y) == (highlight.0 as usize, highlight.1 as usize)
+                    {
+                        for ty in 0..TILESIZE
+                        {
+                            let px = out_writer.get_pixel_mut((x*TILESIZE + 0         ) as u32, (y*TILESIZE + ty) as u32);
+                            px[0] = 255;
+                            px[2] = 255;
+                            px[3] = 255;
+                            let px = out_writer.get_pixel_mut((x*TILESIZE + TILESIZE-1) as u32, (y*TILESIZE + ty) as u32);
+                            px[0] = 255;
+                            px[2] = 255;
+                            px[3] = 255;
+                        }
+                        for tx in 0..TILESIZE
+                        {
+                            let px = out_writer.get_pixel_mut((x*TILESIZE + tx) as u32, (y*TILESIZE + 0         ) as u32);
+                            px[0] = 255;
+                            px[2] = 255;
+                            px[3] = 255;
+                            let px = out_writer.get_pixel_mut((x*TILESIZE + tx) as u32, (y*TILESIZE + TILESIZE-1) as u32);
+                            px[0] = 255;
+                            px[2] = 255;
+                            px[3] = 255;
+                        }
+                    }
+                }
+            }
+            if format!("{}", namesuffix).as_str() != ""
+            {
+                out.save(format!("{}_{}.png", self.namebase, namesuffix)).unwrap();
+            }
+            else
+            {
+                out.save(&self.namebase).unwrap();
+            }
+        }
+        fn recalculate (
+            &mut self,
+            scratch_fields : &mut Vec<f64>,
+            (x, y) : (isize, isize),
+            ) -> usize
+        {
+            let center_type = self.get_type(x, y);
+            if center_type != TileType::Field
+            {
+                return 0;
+            }
+            
+            let mut damaged = false;
+            let mut num_real_neighbors = 0;
+            // copy_from_slice
+            scratch_fields.copy_from_slice(self.get_all_fields(x, y));
+            
+            for offset in DIRECTIONS.iter()
+            {
+                let neighbor_coord = (offset.0 + x, offset.1 + y);
+                let neighbor_type = self.get_type(neighbor_coord.0, neighbor_coord.1).clone();
+                if neighbor_type.is_real()
+                {
+                    num_real_neighbors += 1;
+                }
+            }
+            
+            let mut i = 0;
+            let neighbors = DIRECTIONS.map(|offset : (isize, isize)|
+            {
+                //let offset : (isize, isize) = DIRECTIONS[direction];
+                let neighbor_coord = (offset.0 + x, offset.1 + y);
+                let neighbor_type = self.get_type(neighbor_coord.0, neighbor_coord.1);
+                let neighbor_fields = self.get_all_fields(neighbor_coord.0, neighbor_coord.1);
+                i += 1;
+                (i-1, neighbor_type, neighbor_fields)
+            });
+            
+            for (direction, neighbor_type, neighbor_fields) in neighbors.iter()
+            {
+                for j in 0..self.max_index
+                {
+                    let direction = *direction;
+                    let neighbor_type = *neighbor_type;
+                    
+                    let index = j*DIRECTIONS.len() + direction;
+                    
+                    //assert!(index < scratch_fields.len());
+                    if scratch_fields[index] != 0.0
+                    {
+                        let fiddle = if j != 0 { 1.0 } else { 0.0 };
+                        let mut modifier = self.actual_weight((neighbor_type, &neighbor_fields), j, get_opposite_direction(direction));
+                        modifier *= fiddle;
+                        if modifier != 0.0
+                        {
+                            modifier = f64::max(modifier, 0.0001); // avoid making floats that, when raised to the 8th power, risk becoming subnormal
+                            
+                            let fiddle2 = if neighbor_type.is_real() { 1.0 } else { 0.0 };
+                            let fiddle3 = 1.0 - fiddle2;
+                            
+                            //scratch_fields[index] = fiddle2 * modifier + fiddle3 * ( 0.005 + scratch_fields[index]*0.985 + modifier*0.010);
+                            scratch_fields[index] = fiddle2 * modifier + fiddle3 * ( 0.005 + scratch_fields[index]*0.975 + modifier*0.020);
+                            
+                            //if neighbor_type.is_real()
+                            //{
+                            //    scratch_fields[index] = modifier;
+                            //}
+                            //else
+                            //{
+                            //    // controls the overall amount of chaos in the system; pure modifier is low-chaos
+                            //    //field[j] = field[j]*0.995 + modifier*0.005;
+                            //    //field[j] = field[j]*0.99 + modifier*0.01;
+                            //    //field[j] = field[j]*0.985 + modifier*0.015;
+                            //    //field[j] = field[j]*0.98 + modifier*0.02;
+                            //    //field[j] = field[j]*0.9 + modifier*0.1;
+                            //    //field[j] = 0.05 + field[j]*0.9 + modifier*0.05;
+                            //    scratch_fields[index] = 0.005 + scratch_fields[index]*0.985 + modifier*0.010;
+                            //    
+                            //    
+                            //    // unnecessary as long as the chaoticness expression has the 0.005 term in it
+                            //    // don't let numbers get so small they might get clamped to 0
+                            //    //if (scratch_fields[j].powi(8) as f32).is_subnormal()
+                            //    //{
+                            //    //    scratch_fields[j] = modifier;
+                            //    //}
+                            //}
+                        }
+                        else
+                        {
+                            scratch_fields[index] = 0.0;
+                            damaged = true;
+                        }
+                    }
+                }
+            }
+            
+            let fields = self.get_all_fields_mut(x, y);
+            fields.copy_from_slice(&scratch_fields[..]);
+            
+            if damaged
+            {
+                for dir in DIRECTIONS.iter()
+                {
+                    self.damage.push((x+dir.0, y+dir.1));
+                }
+            }
+            
+            let max_index = self.max_index;
+            let fields = self.get_all_fields_mut(x, y);
+            
+            let mut dead = false;
+            if damaged
+            {
+                dead = true;
+                for j in 0..max_index
+                {
+                    let mut f = 1.0;
+                    for i in 0..DIRECTIONS.len()
+                    {
+                        f *= fields[i + j*DIRECTIONS.len()];
+                    }
+                    if f == 0.0 || f.is_subnormal()
+                    {
+                        for i in 0..DIRECTIONS.len()
+                        {
+                            fields[i + j*DIRECTIONS.len()] = 0.0;
+                        }
+                        continue;
                     }
                     else
                     {
-                        scratch_fields[j] = 0.0;
-                    }
-                    if scratch_fields[j] == 0.0
-                    {
-                        damaged = true;
+                        dead = false;
                     }
                 }
             }
-        }
-        
-        let fields = get_all_fields_mut(out_map_fields, x, y);
-        for i in 0..scratch_fields.len()
-        {
-            fields[i] = scratch_fields[i];
-        }
-        
-        let mut dead = false;
-        if damaged
-        {
-            for dir in directions.iter()
+            
+            if num_real_neighbors > 0 && !self.candidates.contains(&(x, y))
             {
-                damage.push(((x as isize+dir.0) as usize, (y as isize+dir.1) as usize));
+                self.candidates.push((x, y));
             }
-            dead = true;
-            for j in 0..max_index
+            if damaged && dead
             {
-                let mut f = 1.0;
-                for i in 0..directions.len()
-                {
-                    f *= fields[i*max_index + j];
-                }
-                if f.is_subnormal() || f == 0.0
-                {
-                    for i in 0..directions.len()
-                    {
-                        fields[i*max_index + j] = 0.0;
-                    }
-                    continue;
-                }
-                else
-                {
-                    dead = false;
-                }
+                *self.get_type_mut(x, y) = TileType::Dead;
+                println!("!!!!---- killed tile at {},{}", x, y);
+                return 3;
+            }
+            else if damaged
+            {
+                return 2;
+            }
+            else
+            {
+                return 1;
             }
         }
-        
-        
-        if num_real_neighbors > 0 && !candidates.contains(&(x, y))
-        {
-            candidates.push((x, y));
-        }
-        if damaged && dead
-        {
-            *get_type_mut(out_map_types, x, y) = TileType::Dead;
-            println!("!!!!---- killed tile at {},{}", x, y);
-            return 3;
-        }
-        else if damaged
-        {
-            return 2;
-        }
-        else
-        {
-            return 1;
-        }
-    };
     
-    for y in 0..height+2
-    {
-        *get_type_mut(&mut out_map_types,       0, y) = TileType::Tile(0);
-        *get_type_mut(&mut out_map_types, width+1, y) = TileType::Tile(0);
-        damage.push((1, y));
-        damage.push((width, y));
-    }
-    for x in 0..width+2
-    {
-        *get_type_mut(&mut out_map_types, x,        0) = TileType::Tile(0);
-        *get_type_mut(&mut out_map_types, x, height+1) = TileType::Tile(0);
-        damage.push((x, 1));
-        damage.push((x, height));
-    }
-    //out_map[0 * (width+2) + 0] = SuperTile::Tile(map[0][0]);
-    //out_map[0 * (width+2) + width+1] = SuperTile::Tile(*map[0].last().unwrap());
-    //out_map[(height+1) * (width+2) + width+1] = SuperTile::Tile(map.last().unwrap()[0]);
-    //*out_map.last_mut().unwrap() = SuperTile::Tile(*map.last().unwrap().last().unwrap());
-    
-    let write_image = |
-        out_map_types : &Vec<TileType>,
-        out_map_fields : &Vec<f64>,
-        namesuffix,
-        highlight : (usize, usize)
-        |
-    {
-        let mut out = DynamicImage::new_rgba8(((width+2)*tilesize) as u32, ((height+2)*tilesize) as u32);
-        let out_writer = out.as_mut_rgba8().unwrap();
-        let mut output_tile = vec!(RgbaF::new(0.0, 0.0, 0.0, 0.0); tilesize*tilesize);
-        for y in 0..height+2
+        fn recalculate_all (
+            &mut self,
+            scratch_fields : &mut Vec<f64>,
+            collapse_iteration : usize,
+            fail_early : bool,
+            retry_count : usize,
+            ) -> usize
         {
-            for x in 0..width+2
+            let mut i = 0;
+            let mut i2 = 0;
+            let mut max_failstate = 0;
+            while !self.damage.is_empty()
             {
-                let cell_type = get_type(out_map_types, x, y);
-                match cell_type
+                let choice = self.damage.pop().unwrap();
+                let failstate = self.recalculate(scratch_fields, choice);
+                max_failstate = std::cmp::max(max_failstate, failstate);
+                if failstate > 0
                 {
-                    TileType::Tile(id) =>
-                    {
-                        for ty in 0..tilesize
-                        {
-                            for tx in 0..tilesize
-                            {
-                                let px = &id_to_tile[id][ty*tilesize + tx];
-                                let rgba = *image::Rgba::from_slice(&[px.r, px.g, px.b, px.a]);
-                                out_writer.put_pixel((x*tilesize + tx) as u32, (y*tilesize + ty) as u32, rgba);
-                            }
-                        }
-                    }
-                    TileType::Field =>
-                    {
-                        let cell_fields = get_all_fields(out_map_fields, x, y);
-                        output_tile.fill(RgbaF::new(0.0, 0.0, 0.0, 0.0));
-                        let mut control = 0.0;
-                        for j in 0..directions.len()
-                        { 
-                            for id in 0..max_index
-                            {
-                                let f = cell_fields[j*max_index + id] as f32;
-                                for ty in 0..tilesize
-                                {
-                                    for tx in 0..tilesize
-                                    {
-                                        let px = &id_to_tile[id][ty*tilesize + tx];
-                                        output_tile[ty*tilesize + tx].add_mut(&px.to_float().mult(f));
-                                    }
-                                }
-                                control += f;
-                            }
-                        }
-                        for ty in 0..tilesize
-                        {
-                            for tx in 0..tilesize
-                            {
-                                let mut px = output_tile[ty*tilesize + tx].mult(1.0/control as f32);
-                                let overlay = |a, b|
-                                {
-                                    if a < 0.5
-                                    {
-                                        2.0*a*b
-                                    }
-                                    else
-                                    {
-                                        1.0-2.0*((1.0-a)*(1.0-b))
-                                    }
-                                };
-                                px.r = overlay(px.r, 0.7);
-                                px.g = overlay(px.g, 0.3);
-                                px.b = overlay(px.b, 0.3);
-                                let px = px.to_u8();
-                                let mut rgba = *image::Rgba::from_slice(&[px.r, px.g, px.b, px.a]);
-                                out_writer.put_pixel((x*tilesize + tx) as u32, (y*tilesize + ty) as u32, rgba);
-                            }
-                        }
-                    }
-                    _ => {}
+                    i += 1;
                 }
-                if (x, y) == highlight
+                if failstate > 2
                 {
-                    for ty in 0..tilesize
+                    i2 += 1;
+                    self.write_image(format!("{}-{}-b{}", collapse_iteration.to_string(), retry_count, i2), choice);
+                    if fail_early
                     {
-                        let px = out_writer.get_pixel_mut((x*tilesize + 0         ) as u32, (y*tilesize + ty) as u32);
-                        px[0] = 255;
-                        px[2] = 255;
-                        px[3] = 255;
-                        let px = out_writer.get_pixel_mut((x*tilesize + tilesize-1) as u32, (y*tilesize + ty) as u32);
-                        px[0] = 255;
-                        px[2] = 255;
-                        px[3] = 255;
-                    }
-                    for tx in 0..tilesize
-                    {
-                        let px = out_writer.get_pixel_mut((x*tilesize + tx) as u32, (y*tilesize + 0         ) as u32);
-                        px[0] = 255;
-                        px[2] = 255;
-                        px[3] = 255;
-                        let px = out_writer.get_pixel_mut((x*tilesize + tx) as u32, (y*tilesize + tilesize-1) as u32);
-                        px[0] = 255;
-                        px[2] = 255;
-                        px[3] = 255;
+                        println!("recalculated {} tiles and short circuited", i);
+                        return failstate;   
                     }
                 }
             }
+            println!("recalculated {} tiles", i);
+            max_failstate
         }
-        if format!("{}", namesuffix).as_str() != ""
+        
+        fn add_to_freq(&mut self, id : TileId)
         {
-            out.save(format!("{}_{}.png", &args[2], namesuffix)).unwrap();
+            self.out_freqs[id] += 1.0;
+            self.out_total_freq += 1.0;
         }
-        else
+        fn get_freq(&self, id : TileId) -> f64
         {
-            out.save(&args[2]).unwrap();
+            if self.out_total_freq > 0.0
+            {
+                (self.out_freqs[id]+1.0)/self.out_total_freq
+            }
+            else
+            {
+                1.0
+            }
         }
-    };
+        fn get_freq_multiplier(&self, id : TileId) -> f64
+        {
+            let truth = self.freqs[id]/self.total_freq;
+            let local = self.get_freq(id);
+            1000000000.0 * if local == 0.0
+            {
+                1.0
+            }
+            else
+            {
+                truth/local
+            }
+        }
+        fn collapse (
+            &mut self,
+            scratch_fields : &mut Vec<f64>,
+            collapse_iteration : usize,
+            choice : (isize, isize),
+            rng : &mut oorandom::Rand64,
+            retry_count : usize
+            ) -> bool
+        {
+            if self.get_type(choice.0, choice.1) != TileType::Field
+            {
+                return false;
+            }
+            let fields = self.get_all_fields(choice.0, choice.1);
+            let mut decision = 0;
+            
+            let mut total = 0.0;
+            let mut possible_fields = Vec::new();
+            
+            for i in 0..self.max_index
+            {
+                let mut f = self.get_freq_multiplier(i);
+                for dir in 0..DIRECTIONS.len()
+                {
+                    f *= fields[dir + i*DIRECTIONS.len()];
+                }
+                total += f;
+                if f != 0.0
+                {
+                    possible_fields.push(i);
+                }
+            }
+            let force = possible_fields.len() < 2;
+            if false
+            {
+                if possible_fields.len() > 0
+                {
+                    decision = possible_fields[rng.rand_range(0..possible_fields.len() as u64) as usize];
+                }
+            }
+            else
+            {
+                let n = rng.rand_float()*total;
+                //assert!(total > 0.0);
+                let mut total = 0.0;
+                for i in 0..self.max_index
+                {
+                    let mut f = self.get_freq_multiplier(i);
+                    for dir in 0..DIRECTIONS.len()
+                    {
+                        f *= fields[dir + i*DIRECTIONS.len()];
+                    }
+                    if f == 0.0
+                    {
+                        continue;
+                    }
+                    total += f;
+                    if total >= n
+                    {
+                        decision = i;
+                        break;
+                    }
+                }
+                //assert!(decision != 0);
+            }
+            if decision == 0
+            {
+                println!("!!!!!===== picking a random candidate failed, using the most common tiles");
+                println!("!!!!!===== (this means probability recalculation or damage tracking has a bug somewhere!)");
+                decision = self.most_common;
+                // FIXME: use a random neighbor instead?
+                // this is a fallback case though (being here means that probability recalculation has a bug)
+            }
+            //let old_map_types = self.out_map_types.clone();
+            let old_map_fields = self.out_map_fields.clone();
+            let old_damage = self.damage.clone();
+            let old_candidates = self.candidates.clone();
+            *self.get_type_mut(choice.0, choice.1) = TileType::Tile(decision);
+            
+            //let comp = std::cmp::max(1, ((self.width*self.height) as f32/64.0).floor() as usize);
+            //let comp = std::cmp::max(1, ((self.width*self.height) as f32/32.0).floor() as usize);
+            //let comp = std::cmp::max(1, ((self.width*self.height) as f32/16.0).floor() as usize);
+            let comp = std::cmp::max(1, ((self.width*self.height) as f32/8.0).floor() as usize);
+            //let comp = 1;
+            
+            if false && collapse_iteration%comp == 0
+            {
+                println!("writing image for {}", collapse_iteration);
+                self.write_image(format!("{}-a1", collapse_iteration.to_string()), choice);
+                println!("wrote image");
+            }
+            for dir in DIRECTIONS.iter()
+            {
+                self.damage.push((choice.0 + dir.0, choice.1 + dir.1));
+            }
+            let failed = self.recalculate_all(scratch_fields, collapse_iteration, !force, retry_count) == 3;
+            if force && failed
+            {
+                println!("!!!--- failed with tile {} at {},{}, but forced to live with it", decision, choice.0, choice.1);
+            }
+            else if failed
+            {
+                println!("!!!--- failed with tile {} at {},{}, retrying", decision, choice.0, choice.1);
+                *self.get_type_mut(choice.0, choice.1) = TileType::Field;
+                //self.out_map_types = old_map_types;
+                self.out_map_fields = old_map_fields;
+                self.damage = old_damage;
+                self.candidates = old_candidates;
+                self.candidates.push(choice);
+                
+                println!("invalidating decision {} at {},{}", decision, choice.0, choice.1);
+                
+                self.damage.push((choice.0, choice.1));
+                for (i, dir) in DIRECTIONS.iter().enumerate()
+                {
+                // uncomment if invalidation doesn't work properly
+                    self.get_all_fields_mut(choice.0, choice.1)
+                    [decision*DIRECTIONS.len() + i] = 0.0;
+                    self.get_all_fields_mut(choice.0 + dir.0, choice.1 + dir.1)
+                    [decision*DIRECTIONS.len() + get_opposite_direction(i)] = 0.0;
+                // uncomment if invalidation doesn't work properly
+                    self.damage.push((choice.0 + dir.0, choice.1 + dir.1));
+                }
+                
+                self.recalculate_all(scratch_fields, collapse_iteration, false, retry_count);
+            }
+            else
+            {
+                self.add_to_freq(decision);
+                if collapse_iteration%comp == 0
+                {
+                    println!("writing image for {}", collapse_iteration);
+                    self.write_image(&collapse_iteration.to_string(), choice);
+                    println!("wrote image");
+                }
+            }
+            return failed;
+        }
+    }
+    
+    
+    //fn init(px_map : &Vec<Rgba>, width : usize, height : usize, namebase : String) -> Collapser
     
     let mut collapse_iteration = 0;
+    let mut collapser = Collapser::init(&px_map, img.width() as usize, img.height() as usize, args[2].to_string());
+    let mut scratch_fields = vec!(1.0; collapser.max_index*DIRECTIONS.len());
+    collapser.recalculate_all(&mut scratch_fields, collapse_iteration, false, 0);
+    collapse_iteration += 1;
     
-    let mut recalculate_all = |
-        out_map_types : &mut Vec<TileType>,
-        out_map_fields : &mut Vec<f64>,
-        damage : &mut Vec<(usize, usize)>,
-        candidates : &mut Vec<(usize, usize)>,
-        collapse_iteration : usize,
-        fail_early : bool,
-        retry_count : usize,
-        |
-    {
-        let mut i = 0;
-        let mut i2 = 0;
-        let mut max_failstate = 0;
-        while !damage.is_empty()
-        {
-            let choice = damage.pop().unwrap();
-            let failstate = recalculate(out_map_types, out_map_fields, damage, candidates, choice, false);
-            max_failstate = std::cmp::max(max_failstate, failstate);
-            if failstate > 0
-            {
-                i += 1;
-            }
-            if failstate > 2
-            {
-                i2 += 1;
-                //if false && (collapse_iteration == 1 || collapse_iteration == 14 || collapse_iteration == 15)
-                {
-                    write_image(out_map_types, out_map_fields, format!("{}-{}-b{}", collapse_iteration.to_string(), retry_count, i2), choice);
-                }
-                if fail_early
-                {
-                    println!("recalculated {} tiles and short circuited", i);
-                    return failstate;   
-                }
-            }
-        }
-        //for y in 1..height+1
-        //{
-        //    for x in 1..width+1
-        //    {
-        //        let worth_drawing = recalculate(out_map, damage, candidates, (x, y), true);
-        //        if worth_drawing == 2
-        //        {
-        //            panic!("logic error: found something worth re-damaging after exhausting damage options");
-        //        }
-        //    }
-        //}
-        println!("recalculated {} tiles", i);
-        return max_failstate;
-    };
-    
-    recalculate_all(&mut out_map_types, &mut out_map_fields, &mut damage, &mut candidates, collapse_iteration, false, 0);
     
     #[allow(unused_variables)]
     let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
@@ -727,224 +981,49 @@ fn main() {
     //let time = 1627836423901;
     //let time = 1627901131263;
     //let time = 1627919001951;
-    let time = 1627923822683;
+    //let time = 1627923822683;
+    //let time = 1628290023690;
+    let time = 1628290385006;
     println!("seed: {}", time);
     let mut rng = oorandom::Rand64::new(time);
     
-    //let comp = std::cmp::max(1, (((width+2)*(height+2)) as f32/64.0).floor() as usize);
-    //let comp = std::cmp::max(1, (((width+2)*(height+2)) as f32/32.0).floor() as usize);
-    let comp = std::cmp::max(1, (((width+2)*(height+2)) as f32/16.0).floor() as usize);
-    //let comp = std::cmp::max(1, (((width+2)*(height+2)) as f32/8.0).floor() as usize);
-    //let comp = 1;
-    
-    let mut out_freqs = vec!(0.0; max_index);
-    let mut out_total_freq = 0.0;
-    macro_rules! add_to_freq {
-        ($id:expr) => 
-        {
-            out_freqs[$id] += 1.0;
-            out_total_freq += 1.0;
-        }
-    }
-    macro_rules! get_freq {
-        ($id:expr) => 
-        {
-            if out_total_freq > 0.0
-            {
-                (out_freqs[$id]+1.0)/out_total_freq
-            }
-            else
-            {
-                1.0
-            }
-        }
-    }
-    macro_rules! get_freq_multiplier {
-        ($id:expr) => 
-        {
-            {
-                let truth = freqs[$id]/total_freq;
-                let local = get_freq!($id);
-                if truth == 0.0
-                {
-                    0.0
-                }
-                else if local == 0.0
-                {
-                    1.0
-                }
-                else
-                {
-                    truth/local
-                }
-            }
-        }
-    }
-    
-    let mut collapse = |
-        choice : (usize, usize),
-        rng : &mut oorandom::Rand64,
-        out_map_types : &mut Vec<TileType>,
-        out_map_fields : &mut Vec<f64>,
-        damage : &mut Vec<(usize, usize)>,
-        candidates : &mut Vec<(usize, usize)>,
-        retry_count : usize| -> bool
-    {
-        if get_type(out_map_types, choice.0, choice.1) != TileType::Field
-        {
-            return false;
-        }
-        let fields = get_all_fields(out_map_fields, choice.0, choice.1);
-        let mut decision = 0;
-        
-        let mut total = 0.0;
-        let mut possible_fields = Vec::new();
-        
-        for i in 0..max_index
-        {
-            let mut f = get_freq_multiplier!(i);
-            for dir in 0..directions.len()
-            {
-                f *= fields[dir*max_index + i];
-            }
-            total += f;
-            if f != 0.0
-            {
-                possible_fields.push(i);
-            }
-        }
-        let force = possible_fields.len() < 2;
-        if false
-        {
-            if possible_fields.len() > 0
-            {
-                decision = possible_fields[rng.rand_range(0..possible_fields.len() as u64) as usize];
-            }
-        }
-        else
-        {
-            let n = rng.rand_float()*total;
-            //assert!(total > 0.0);
-            let mut total = 0.0;
-            for i in 0..max_index
-            {
-                let mut f = get_freq_multiplier!(i);
-                for dir in 0..directions.len()
-                {
-                    f *= fields[dir*max_index + i];
-                }
-                if f == 0.0
-                {
-                    continue;
-                }
-                total += f;
-                if total >= n
-                {
-                    decision = i;
-                    break;
-                }
-            }
-            //assert!(decision != 0);
-        }
-        if decision == 0
-        {
-            println!("!!!!!===== picking a random candidate failed, using the most common tiles");
-            println!("!!!!!===== (this means probability recalculation or damage tracking has a bug somewhere!)");
-            decision = most_common;
-            // FIXME: use a random neighbor instead?
-            // this is a fallback case though (being here means that probability recalculation has a bug)
-        }
-        let old_map_types = out_map_types.clone();
-        let old_map_fields = out_map_fields.clone();
-        let old_damage = damage.clone();
-        let old_candidates = candidates.clone();
-        *get_type_mut(out_map_types, choice.0, choice.1) = TileType::Tile(decision);
-        if false && collapse_iteration%comp == 0
-        {
-            println!("writing image for {}", collapse_iteration);
-            write_image(out_map_types, out_map_fields, format!("{}-a1", collapse_iteration.to_string()), choice);
-            println!("wrote image");
-        }
-        for dir in directions.iter()
-        {
-            damage.push(((choice.0 as isize + dir.0) as usize, (choice.1 as isize + dir.1) as usize));
-        }
-        let mut failed = recalculate_all(out_map_types, out_map_fields, damage, candidates, collapse_iteration, !force, retry_count) == 3;
-        if force && failed
-        {
-            println!("!!!--- failed with tile {} at {},{}, but forced to live with it", decision, choice.0, choice.1);
-        }
-        else if failed
-        {
-            println!("!!!--- failed with tile {} at {},{}, retrying", decision, choice.0, choice.1);
-            *out_map_types = old_map_types;
-            *out_map_fields = old_map_fields;
-            *damage = old_damage;
-            *candidates = old_candidates;
-            candidates.push(choice);
-            
-            for i in 0..directions.len()
-            {
-                get_fields_mut(out_map_fields, choice.0, choice.1, i)[decision] = 0.0;
-            }
-            println!("invalidating decision {} at {},{}", decision, choice.0, choice.1);
-            
-            for dir in directions.iter()
-            {
-                damage.push(((choice.0 as isize + dir.0) as usize, (choice.1 as isize + dir.1) as usize));
-            }
-            recalculate_all(out_map_types, out_map_fields, damage, candidates, collapse_iteration, false, retry_count);
-        }
-        else
-        {
-            add_to_freq!(decision);
-            if collapse_iteration%comp == 0
-            {
-                println!("writing image for {}", collapse_iteration);
-                write_image(out_map_types, out_map_fields, collapse_iteration.to_string(), choice);
-                println!("wrote image");
-            }
-            collapse_iteration += 1;
-        }
-        return failed;
-    };
-    
-    
     if false
     {
-        for y in 1..height+1
+        for y in 0..collapser.height
         {
-            for x in 1..width+1
+            for x in 0..collapser.width
             {
-                let choice = (x, y);
+                let choice = (x as isize, y as isize);
                 let mut i = 0;
-                while collapse(choice, &mut rng, &mut out_map_types, &mut out_map_fields, &mut damage, &mut candidates, i)
+                while collapser.collapse(&mut scratch_fields, collapse_iteration, choice, &mut rng, i)
                 {
                     i += 1;
                 }
+                collapse_iteration += 1;
             }
         }
     }
     else
     {
-        while !candidates.is_empty()
+        while !collapser.candidates.is_empty()
         {
-            let choice_index = rng.rand_range(0..candidates.len() as u64) as usize;
-            let choice = candidates.remove(choice_index);
+            let choice_index = rng.rand_range(0..collapser.candidates.len() as u64) as usize;
+            let choice = collapser.candidates.remove(choice_index);
             let mut i = 0;
-            while collapse(choice, &mut rng, &mut out_map_types, &mut out_map_fields, &mut damage, &mut candidates, i)
+            while collapser.collapse(&mut scratch_fields, collapse_iteration, choice, &mut rng, i)
             {
                 i += 1;
             }
+            collapse_iteration += 1;
         }
     }
     
     let mut dead_tiles = Vec::new();
-    for y in 1..height+1
+    for y in 0..collapser.height as isize
     {
-        for x in 1..width+1
+        for x in 0..collapser.width as isize
         {
-            match get_type(&out_map_types, x, y)
+            match collapser.get_type(x, y)
             {
                 TileType::Dead =>
                     dead_tiles.push((x, y)),
@@ -971,14 +1050,14 @@ fn main() {
     while !dead_tiles.is_empty()
     {
         let (x, y) = dead_tiles.pop().unwrap();
-        let index = y * (width+2) + x;
-        match &out_map[index]
+        let index = y*collapser.width + x;
+        match collapser.get_type(x, y)
         {
             TileType::Dead => {}
             _ => continue
         }
         let mut priority = Vec::<(usize, usize, usize, f64)>::new(); // (dir_index, map_index, tile_type, freq)
-        for (dir_index, offset) in directions.iter().enumerate()
+        for (dir_index, offset) in DIRECTIONS.iter().enumerate()
         {
             let map_index = (index as isize + (offset.1) * (width+2) as isize + offset.0) as usize;
             let tile = &out_map[map_index];
@@ -995,7 +1074,7 @@ fn main() {
         let mut success = false;
         while !priority.is_empty()
         {
-            let mut edges : [Vec<f64>; directions.len()] = Default::default();
+            let mut edges : [Vec<f64>; DIRECTIONS.len()] = Default::default();
             for edge in edges.iter_mut()
             {
                 *edge = vec!(1.0; (max_index) as usize);
@@ -1010,7 +1089,7 @@ fn main() {
                 }
             }
             let mut mix_edges = vec!(1.0; (max_index) as usize);
-            for i in 0..directions.len()
+            for i in 0..DIRECTIONS.len()
             {
                 for j in 0..mix_edges.len()
                 {
@@ -1045,7 +1124,7 @@ fn main() {
     }
     */
     
-    write_image(&out_map_types, &out_map_fields, "".to_string(), (!0usize, !0usize));
+    collapser.write_image(&"".to_string(), (-1, -1));
 }
 
 
